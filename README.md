@@ -1,3 +1,10 @@
+| `PATCH /link/:short`      | session   | Changes the destination, the short code, the tags, or any of them |
+| `DELETE /link/:short`     | session   | Deletes a link                                      |
+| `GET /tags`               | session   | Tags page: name and colour your labels              |
+| `GET /api/tags`           | session   | Your tags as json                                   |
+| `POST /tags`              | session   | Creates a tag                                       |
+| `PATCH /tags/:name`       | session   | Renames a tag, recolours it, or both                |
+| `DELETE /tags/:name`      | session   | Deletes a tag and takes it off your links           |
 # link-shortener-backend
 
 A simple link shortening backend using google cloud datastore key/values for a fast and affordable service.
@@ -61,7 +68,7 @@ whose origin cannot be established are **not** limited - see `TRUSTED_PROXY_DEPT
 
 | Route                     | Auth      | What it does                                       |
 |---------------------------|-----------|----------------------------------------------------|
-| `GET /`                   | session   | Dashboard: create, list, edit and delete links      |
+| `GET /`                   | session   | Dashboard: create, list, edit, tag and delete links. `?tag=` filters |
 | `GET /login`              | -         | Sign in form                                        |
 | `POST /login`             | -         | Emails a magic link                                 |
 | `GET /auth/callback`      | -         | Confirm step for an emailed link                    |
@@ -69,25 +76,32 @@ whose origin cannot be established are **not** limited - see `TRUSTED_PROXY_DEPT
 | `POST /logout`            | -         | Clears the session cookie                           |
 | `GET /api/auth/session`   | session   | `{"email": "..."}` for the current session          |
 | `GET /:short`             | -         | Public redirect, counts a click                     |
-| `GET /links`              | session   | Your links as json. Admins add `?all=1` for everyone's |
+| `GET /links`              | session   | Your links as json. Admins add `?all=1` for everyone's. `?tag=` filters |
 | `GET /link/:short`        | session   | Link details as json                                |
 | `POST /link`              | session   | Creates a short link                                |
-| `PATCH /link/:short`      | session   | Changes the destination, the short code, or both    |
+| `PATCH /link/:short`      | session   | Changes the destination, the short code, the tags, or any of them |
 | `DELETE /link/:short`     | session   | Deletes a link                                      |
+| `GET /tags`               | session   | Tags page: name and colour your labels              |
+| `GET /api/tags`           | session   | Your tags as json                                   |
+| `POST /tags`              | session   | Creates a tag                                       |
+| `PATCH /tags/:name`       | session   | Renames a tag, recolours it, or both                |
+| `DELETE /tags/:name`      | session   | Deletes a tag and takes it off your links           |
 | `GET /users`              | admin     | Access page: who can sign in, and add someone       |
 | `POST /users`             | admin     | Adds an address to the allow list                   |
 | `PATCH /users/:email`     | admin     | Changes somebody's role, or blocks them signing in |
 
 Static routes win over `/:short`, and short codes are upper-cased before lookup, so `/login` is the
 login page while `/LOGIN` is still a perfectly good short code. Short codes that would collide with
-a route the service serves itself - `link`, `links`, `user`, `users`, `login`, `logout`, `auth`,
-`api`, `static` - are rejected at creation, along with anything outside `A-Z a-z 0-9 - _`.
+a route the service serves itself - `link`, `links`, `user`, `users`, `tag`, `tags`, `login`,
+`logout`, `auth`, `api`, `static` - are rejected at creation, along with anything outside
+`A-Z a-z 0-9 - _`.
 
 ## Who can change what
 
 Every link records the address that created it in `CreatedBy`. That is the ownership record.
 
-- A normal user sees only their own links, and can only edit or delete their own.
+- A normal user sees only their own links, and can only edit or delete their own. Tags are theirs
+  outright: an admin does not get to reach into somebody else's set.
 - An **admin** sees their own by default and everybody's on request, can edit or delete anything,
   and runs the Access page: adding users, changing roles, and blocking people. Make somebody an
   admin by ticking the box when adding them, from their row on the Access page, or by setting
@@ -113,6 +127,42 @@ Two consequences worth knowing:
 `PATCH` accepts a new `short`, which moves the entity, because the short code *is* the datastore
 key. Clicks and the original creation details come along. The old code stops resolving immediately,
 so anything already sharing it gets a 404 - that is inherent to renaming, not a bug to work around.
+
+## Tags
+
+Links can be labelled. A tag has a **name** and a **colour**, and it belongs to the person who made
+it: your tags are yours, nobody else sees them, and two people can both have one called `work`
+without them being the same tag.
+
+A link carries its tags as one **comma separated string** in a `Tags` property - `work,urgent`.
+That is deliberately a single property rather than a repeated one: a link's whole labelling arrives
+with the entity, and there is no index row per tag to pay for.
+
+- Names are compared **case insensitively** and with runs of whitespace collapsed, so `Work` and
+  `work` are the same tag. The casing you created it with is the casing that gets shown.
+- Up to **10 tags per link**, each up to **32 characters**. Commas, slashes and control characters
+  are rejected - a comma is the separator, and the name ends up in a url path and a datastore key.
+- Typing a tag onto a link **creates it** if you don't have it yet, with a colour picked from the
+  palette that you aren't already using. You never have to visit the tags page first.
+- Renaming a tag rewrites the name on every link of yours carrying it. Deleting one takes it off
+  those links and leaves the links otherwise alone.
+
+Filter by tag with **`?tag=work`** on the dashboard or on `GET /links`, or by clicking a pill. The
+filter is applied in memory after the list comes back, for the same reason the list is sorted there:
+a datastore filter on tags alongside the `CreatedBy` one would need a composite index.
+
+An **admin** looking at everybody's links still sees their own tag list in the filters, because tags
+are a private filing system rather than part of the service's state. A link carrying somebody else's
+tag still shows the label, drawn in the default grey. An admin who tags another person's link puts
+that tag in **that person's** set, not their own.
+
+Two limits worth knowing, both inherited from `LINK_LIST_LIMIT`:
+
+- Filtering happens after the first 500 links are loaded, so it filters that page rather than
+  searching everything behind it.
+- Renaming or deleting a tag rewrites the same first 500. Past that, the tag would stay on the
+  links beyond the limit. Both are the point at which the `CreatedBy` + `Created` composite index
+  is worth adding.
 
 ## Redirects and click counts
 
@@ -151,17 +201,33 @@ matched the empty value, so it authenticated everybody. Remove it from the Cloud
 
 ## Datastore
 
-Three kinds, all in `DATASTORE_NAMESPACE`:
+Four kinds, all in `DATASTORE_NAMESPACE`:
 
-- **`link`** - unchanged. Key name is the upper-cased short code.
+- **`link`** - key name is the upper-cased short code. Carries its labels in a `Tags` string
+  property, comma separated.
 - **`user`** - the allow list. Key name is the lower-cased email address. Having an entity is what
   grants access.
 - **`magic_link`** - pending login tokens. Key name is the SHA-256 hash of the emailed token.
+- **`tag`** - a label. Key name is `<lower-cased owner email>:<lower-cased tag name>`, which is what
+  makes a tag owned: two people can each have a `work` tag and neither can end up with two of them,
+  without a uniqueness query on the way in.
 
-The `user` and `magic_link` kinds are looked up by key, and the link list filters on
-`CreatedBy` with no sort order - datastore sorts nothing, the service sorts the page in
-memory - so **no composite indexes are needed**. Past a few thousand links, swap that for a
-`CreatedBy` + `Created` composite index and let datastore do the ordering.
+| Property  | Type    | Notes                                              |
+|-----------|---------|----------------------------------------------------|
+| `Name`    | string  | As displayed, in the casing it was created with     |
+| `Color`   | string  | `#rrggbb`. Anything else is read as the default grey |
+| `Owner`   | string  | Lower-cased email address. Filtered on              |
+| `Created` | integer | Unix seconds                                        |
+
+The `user`, `magic_link` and `tag` kinds are looked up by key, the link list filters on `CreatedBy`
+with no sort order, and the tag list filters on `Owner` with no sort order - datastore sorts
+nothing, the service sorts each page in memory - so **no composite indexes are needed**. Past a few
+thousand links, swap that for a `CreatedBy` + `Created` composite index and let datastore do the
+ordering.
+
+`Color` is checked on the way out of datastore, not just on the way in: it ends up in a `style`
+attribute and in the json the dashboard builds its pills from, so a value edited by hand in the
+console into something that isn't a hex colour is read as the default rather than reaching the page.
 
 ### Allowing someone to sign in
 

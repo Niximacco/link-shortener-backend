@@ -48,7 +48,7 @@ func samplePage(title string) Page {
 }
 
 func TestEveryPageRenders(t *testing.T) {
-	for _, name := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage} {
+	for _, name := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage, UsersPage, TagsPage} {
 		body := render(t, name, samplePage("A Title"))
 
 		if !strings.Contains(body, "A Title") {
@@ -348,5 +348,209 @@ func TestUsersPageCarriesStateForTheToggles(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("users page did not render %q, so a toggle can't tell which way to flip", want)
 		}
+	}
+}
+
+func taggedDashboard() Page {
+	page := dashboardWithLinks()
+	page.Links = []types.Link{
+		{Short: "ABC123", Long: "https://example.com/one", Clicks: 7, Created: 1755900000, CreatedBy: "owner@example.com", Tags: "work,urgent"},
+		{Short: "PLAIN", Long: "https://example.com/two", Created: 1755900000, CreatedBy: "owner@example.com"},
+	}
+	page.Tags = []types.Tag{
+		{Name: "work", Color: "#3b7dd8", Owner: "someone@example.com"},
+		{Name: "urgent", Color: "#b4453c", Owner: "someone@example.com"},
+	}
+
+	return page
+}
+
+func TestDashboardRendersTagPills(t *testing.T) {
+	body := render(t, DashboardPage, taggedDashboard())
+
+	// Each tag is drawn in its own colour and links to its filtered view.
+	for _, want := range []string{"#3b7dd8", "#b4453c", `href="/?tag=work"`, `href="/?tag=urgent"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard did not render %q", want)
+		}
+	}
+
+	// ZgotmplZ is what html/template leaves behind when it refuses a value in a
+	// css context. A colour that came out as that would silently be no colour.
+	if strings.Contains(body, "ZgotmplZ") {
+		t.Error("a colour was rejected by the template escaper instead of reaching the style attribute")
+	}
+}
+
+func TestDashboardOffersTheTagFilters(t *testing.T) {
+	body := render(t, DashboardPage, taggedDashboard())
+
+	if !strings.Contains(body, `class="filters"`) {
+		t.Error("dashboard did not render the filter row")
+	}
+
+	// With nothing filtered, "All" is the selected chip.
+	if !strings.Contains(body, `class="pill filter on"`) {
+		t.Error("dashboard did not mark a filter chip as selected")
+	}
+}
+
+func TestDashboardMarksTheActiveFilter(t *testing.T) {
+	page := taggedDashboard()
+	page.Tag = "WORK"
+
+	body := render(t, DashboardPage, page)
+
+	// The active chip is matched case-insensitively, the way tags compare, and
+	// clicking it clears the filter rather than reapplying it.
+	if !strings.Contains(body, "work &times;") {
+		t.Error("dashboard did not mark the active tag as the one to clear")
+	}
+}
+
+func TestDashboardFilteredEmptyStateNamesTheTag(t *testing.T) {
+	page := taggedDashboard()
+	page.Tag = "personal"
+	page.Links = nil
+
+	body := render(t, DashboardPage, page)
+
+	if !strings.Contains(body, "Nothing is tagged personal") {
+		t.Error("dashboard did not explain that the filter is what emptied the list")
+	}
+
+	if strings.Contains(body, "You have not created a link yet") {
+		t.Error("a filtered-to-nothing list claimed the user has no links at all")
+	}
+}
+
+func TestDashboardCarriesTheTagEditorAndPicker(t *testing.T) {
+	body := render(t, DashboardPage, taggedDashboard())
+
+	for _, want := range []string{`id="tags"`, `list="tag-names"`, `id="tag-names"`, `value="work,urgent"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard did not render %q", want)
+		}
+	}
+}
+
+func TestDashboardLinksToTheTagsPage(t *testing.T) {
+	body := render(t, DashboardPage, taggedDashboard())
+
+	// Tags are everybody's, unlike the access page, so this is not admin-gated.
+	page := taggedDashboard()
+	page.IsAdmin = false
+
+	for _, rendered := range []string{body, render(t, DashboardPage, page)} {
+		if !strings.Contains(rendered, `href="/tags"`) {
+			t.Error("dashboard did not link to the tags page")
+		}
+	}
+}
+
+func TestDashboardEscapesTagNames(t *testing.T) {
+	page := taggedDashboard()
+	page.Links = []types.Link{{Short: "X", Long: "https://example.com", Tags: `<script>alert(1)</script>`}}
+	page.Tags = []types.Tag{{Name: `<script>alert(2)</script>`, Color: "#3b7dd8"}}
+
+	body := render(t, DashboardPage, page)
+
+	for _, escaped := range []string{"<script>alert(1)</script>", "<script>alert(2)</script>"} {
+		if strings.Contains(body, escaped) {
+			t.Errorf("a tag name escaped into markup: %q", escaped)
+		}
+	}
+}
+
+// A colour is written straight into a style attribute, so a value that isn't
+// one has to become the default rather than reaching the page.
+func TestDashboardRefusesAColorThatIsNotOne(t *testing.T) {
+	page := taggedDashboard()
+	page.Tags = []types.Tag{{Name: "work", Color: `#fff;background:url(//evil.example/x)`}}
+	page.Links = []types.Link{{Short: "X", Long: "https://example.com", Tags: "work"}}
+
+	body := render(t, DashboardPage, page)
+
+	if strings.Contains(body, "evil.example") {
+		t.Errorf("a crafted colour reached the style attribute:\n%s", body)
+	}
+}
+
+// A link can carry a tag with no entity behind it: somebody else's tag on a
+// link an admin is looking at, or one typed on a moment before the tag entity
+// caught up. It still has to draw.
+func TestDashboardDrawsTagsWithNoEntityBehindThem(t *testing.T) {
+	page := taggedDashboard()
+	page.Tags = nil
+	page.Links = []types.Link{{Short: "X", Long: "https://example.com", Tags: "orphan"}}
+
+	body := render(t, DashboardPage, page)
+
+	if !strings.Contains(body, ">orphan</a>") {
+		t.Error("a tag with no entity behind it was not drawn")
+	}
+}
+
+func tagsPage() Page {
+	page := New("Tags")
+	page.Email = "someone@example.com"
+	page.Limit = 200
+	page.Palette = []string{"#3b7dd8", "#b4453c"}
+	page.Tags = []types.Tag{
+		{Name: "work", Color: "#3b7dd8", Owner: "someone@example.com", Created: 1755900000},
+		{Name: "urgent", Color: "#b4453c", Owner: "someone@example.com", Created: 1755000000},
+	}
+	page.TagCounts = map[string]int{"work": 4, "urgent": 0}
+
+	return page
+}
+
+func TestTagsPageListsTagsWithTheirCounts(t *testing.T) {
+	body := render(t, TagsPage, tagsPage())
+
+	for _, want := range []string{"work", "urgent", "#3b7dd8", "#b4453c", ">4<", "Aug 22, 2025"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("tags page did not render %q", want)
+		}
+	}
+}
+
+func TestTagsPageCarriesTheAddFormAndPalette(t *testing.T) {
+	body := render(t, TagsPage, tagsPage())
+
+	for _, want := range []string{`id="add-tag"`, `id="new-name"`, `id="new-color"`, "Add tag", `class="swatch"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("tags page did not render %q", want)
+		}
+	}
+}
+
+func TestTagsPageOffersEditAndDelete(t *testing.T) {
+	body := render(t, TagsPage, tagsPage())
+
+	for _, control := range []string{`data-action="edit"`, `data-action="delete"`, `data-action="save"`, `data-name="work"`, `data-color="#3b7dd8"`} {
+		if !strings.Contains(body, control) {
+			t.Errorf("tags page did not render the control %q", control)
+		}
+	}
+}
+
+func TestTagsPageEmptyState(t *testing.T) {
+	page := tagsPage()
+	page.Tags = nil
+
+	body := render(t, TagsPage, page)
+	if !strings.Contains(body, "You have not made a tag yet") {
+		t.Error("tags page did not render the empty state")
+	}
+}
+
+func TestTagsPageEscapesTagNames(t *testing.T) {
+	page := tagsPage()
+	page.Tags = []types.Tag{{Name: `x"><script>alert(1)</script>`, Color: "#3b7dd8"}}
+
+	body := render(t, TagsPage, page)
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Error("a tag name escaped into markup")
 	}
 }

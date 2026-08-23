@@ -6,6 +6,7 @@ import (
 	auth_handler "github.com/anthonynixon/link-shortener-backend/internal/handlers/auth"
 	"github.com/anthonynixon/link-shortener-backend/internal/handlers/link"
 	user_handler "github.com/anthonynixon/link-shortener-backend/internal/handlers/user"
+	"github.com/anthonynixon/link-shortener-backend/internal/handlers/tag"
 	"github.com/anthonynixon/link-shortener-backend/internal/router"
 	"github.com/gin-gonic/gin"
 	"log"
@@ -33,6 +34,7 @@ func main() {
 	link.AddLinkV1(router)
 	auth_handler.AddAuthV1(router)
 	user_handler.AddUserV1(router)
+	tag_handler.AddTagV1(router)
 
 	log.Printf("Running link-shortener-backend on :%s...", PORT)
 	err := router.Run(fmt.Sprintf(":%s", PORT))

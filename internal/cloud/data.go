@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/anthonynixon/link-shortener-backend/internal/tags"
 	"github.com/anthonynixon/link-shortener-backend/internal/types"
 	"log"
 	"os"
@@ -79,6 +80,7 @@ func GetLink(short string) (link types.Link, err error) {
 
 func NewLink(newLink types.Link) (err error) {
 	newLink.Long = normalizeLong(newLink.Long)
+	newLink.Tags = tags.Join(tags.Parse(newLink.Tags))
 	key := linkKey(newLink.Short)
 	_, err = datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
 		// We first check that there is no entity stored with the given key.
@@ -177,8 +179,13 @@ func ListLinks(createdBy string, limit int) (links []types.Link, err error) {
 	return links, nil
 }
 
-// UpdateLink changes a link's destination, its short code, or both, and returns
-// what the link looks like afterwards.
+// UpdateLink changes a link's destination, its short code, its tags, or any
+// combination, and returns what the link looks like afterwards.
+//
+// newTags is a pointer because clearing a link's tags and leaving them alone
+// are both requests to make: nil leaves them, and a pointer to "" removes them
+// all. The destination and short code have no such ambiguity - there is no such
+// thing as a link with no destination - so they stay plain strings.
 //
 // requireOwner is the ownership check: pass the caller's email to limit them to
 // their own links, or "" for an admin who may change anything. It is enforced
@@ -187,7 +194,7 @@ func ListLinks(createdBy string, limit int) (links []types.Link, err error) {
 //
 // Renaming means moving the entity, since the short code is its key. Clicks and
 // the original creation details come along, and the old code stops resolving.
-func UpdateLink(short string, newShort string, newLong string, requireOwner string) (link types.Link, err error) {
+func UpdateLink(short string, newShort string, newLong string, newTags *string, requireOwner string) (link types.Link, err error) {
 	oldKey := linkKey(short)
 	renaming := newShort != "" && !strings.EqualFold(newShort, short)
 
@@ -208,6 +215,10 @@ func UpdateLink(short string, newShort string, newLong string, requireOwner stri
 
 		if newLong != "" {
 			stored.Long = normalizeLong(newLong)
+		}
+
+		if newTags != nil {
+			stored.Tags = tags.Join(tags.Parse(*newTags))
 		}
 
 		writeKey := oldKey

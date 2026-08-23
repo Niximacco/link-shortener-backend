@@ -1,4 +1,5 @@
 {{define "content"}}
+{{$colors := .TagColors}}
 <main class="wide">
   <h1>Short links</h1>
   <p>Point a short code at any url. Leave the code blank and one gets generated.</p>
@@ -14,9 +15,16 @@
         <label for="short">Short code <span class="muted-small">(optional)</span></label>
         <input id="short" type="text" name="short" placeholder="LAUNCH" autocomplete="off" spellcheck="false">
       </div>
+      <div>
+        <label for="tags">Tags <span class="muted-small">(optional, comma separated)</span></label>
+        <input id="tags" type="text" name="tags" placeholder="work, urgent" autocomplete="off" list="tag-names">
+      </div>
     </div>
     <button type="submit" id="submit">Create short link</button>
   </form>
+  <datalist id="tag-names">
+    {{range .Tags}}<option value="{{.Name}}"></option>{{end}}
+  </datalist>
   <div class="result" id="result">
     <a id="result-link" href="#" target="_blank" rel="noopener"></a>
     <button class="link" type="button" id="copy">Copy</button>
@@ -26,12 +34,26 @@
     <h2>{{if .ShowingAll}}All links{{else}}Your links{{end}} <span class="muted-small" id="count">({{len .Links}})</span></h2>
     {{if .IsAdmin}}
       {{if .ShowingAll}}
-        <a class="toggle" href="/">Show only mine</a>
+        <a class="toggle" href="/{{if .Tag}}?tag={{.Tag}}{{end}}">Show only mine</a>
       {{else}}
-        <a class="toggle" href="/?all=1">Show everyone</a>
+        <a class="toggle" href="/?all=1{{if .Tag}}&tag={{.Tag}}{{end}}">Show everyone</a>
       {{end}}
     {{end}}
   </div>
+
+  {{if .Tags}}
+    <div class="filters">
+      <a class="pill filter{{if not .Tag}} on{{end}}" href="/{{if .ShowingAll}}?all=1{{end}}">All</a>
+      {{range .Tags}}
+        {{$color := tagColor $colors .Name}}
+        {{if sameTag $.Tag .Name}}
+          <a class="pill filter on" href="/{{if $.ShowingAll}}?all=1{{end}}" style="background: {{$color}}; color: {{readable $color}}">{{.Name}} &times;</a>
+        {{else}}
+          <a class="pill filter" href="/?tag={{.Name}}{{if $.ShowingAll}}&all=1{{end}}" style="border-color: {{$color}}"><span class="dot" style="background: {{$color}}"></span>{{.Name}}</a>
+        {{end}}
+      {{end}}
+    </div>
+  {{end}}
 
   {{if .Links}}
     {{if ge (len .Links) .Limit}}
@@ -43,6 +65,7 @@
           <tr>
             <th>Code</th>
             <th>Destination</th>
+            <th>Tags</th>
             <th class="num">Clicks</th>
             <th>Created</th>
             {{if .ShowingAll}}<th>Owner</th>{{end}}
@@ -60,6 +83,17 @@
               <a class="view" href="{{.Long}}" target="_blank" rel="noopener">{{.Long}}</a>
               <input class="edit" type="text" value="{{.Long}}" aria-label="Destination">
             </td>
+            <td class="tags">
+              <span class="view">
+                {{range .TagNames}}
+                  {{$color := tagColor $colors .}}
+                  <a class="pill" href="/?tag={{.}}{{if $.ShowingAll}}&all=1{{end}}" style="background: {{$color}}; color: {{readable $color}}">{{.}}</a>
+                {{else}}
+                  <span class="muted-small">-</span>
+                {{end}}
+              </span>
+              <input class="edit" type="text" value="{{.Tags}}" list="tag-names" aria-label="Tags">
+            </td>
             <td class="num">{{.Clicks}}</td>
             <td class="when">{{date .Created}}</td>
             {{if $.ShowingAll}}<td class="who">{{if .CreatedBy}}{{.CreatedBy}}{{else}}-{{end}}</td>{{end}}
@@ -75,8 +109,18 @@
       </table>
     </div>
   {{else}}
-    <p class="empty">{{if .ShowingAll}}Nobody has created a link yet.{{else}}You have not created a link yet.{{end}}</p>
+    <p class="empty">
+      {{if .Tag}}Nothing is tagged {{.Tag}}.
+      {{else if .ShowingAll}}Nobody has created a link yet.
+      {{else}}You have not created a link yet.{{end}}
+    </p>
   {{end}}
+
+  <div class="list-head">
+    <h2>Tags</h2>
+    <a class="toggle" href="/tags">Manage tags</a>
+  </div>
+  <p class="muted-small">Name and colour your labels. Typing a new one onto a link above makes it too.</p>
 
   {{if .IsAdmin}}
   <div class="list-head">
@@ -95,12 +139,54 @@
   const BASE_URL = {{.BaseURL}};
   const SHOWING_ALL = {{.ShowingAll}};
   const MY_EMAIL = {{.Email}};
+  // Tag name to colour, keyed and checked the same way the server keys and
+  // checks it, so a pill built on this page comes out identical to one the
+  // server rendered.
+  const TAG_COLORS = {{.TagColors}};
+  const DEFAULT_TAG_COLOR = {{.DefaultTagColor}};
 
   const errorBox = document.getElementById("error");
   const result = document.getElementById("result");
   const resultLink = document.getElementById("result-link");
   const submit = document.getElementById("submit");
   const count = document.getElementById("count");
+
+  const tagColors = Object.assign({}, TAG_COLORS);
+
+  // Colours are already settled server-side, but this is the point where one
+  // gets written into a style property, so it is checked again here rather than
+  // relying on that having happened.
+  function colorFor(name) {
+    const color = tagColors[tagKey(name)];
+    return /^#[0-9a-f]{6}$/i.test(color || "") ? color : DEFAULT_TAG_COLOR;
+  }
+
+  // The same key the server compares tags by: trimmed, single-spaced, lowered.
+  function tagKey(name) {
+    return name.trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
+  // Same weighting the server uses, so a pill drawn here and the same pill
+  // after a reload pick the same text colour.
+  function readable(color) {
+    const value = parseInt(color.slice(1), 16);
+    const brightness = (((value >> 16) & 255) * 299 + ((value >> 8) & 255) * 587 + (value & 255) * 114) / 1000;
+    return brightness > 150 ? "#1d1d1f" : "#ffffff";
+  }
+
+  function tagNames(list) {
+    const names = [];
+    const seen = {};
+    for (const part of (list || "").split(",")) {
+      const name = part.trim().replace(/\s+/g, " ");
+      if (!name || seen[name.toLowerCase()]) {
+        continue;
+      }
+      seen[name.toLowerCase()] = true;
+      names.push(name);
+    }
+    return names;
+  }
 
   function fail(message) {
     errorBox.textContent = message;
@@ -123,6 +209,33 @@
     }
   }
 
+  // Built element by element rather than from a string, so a tag name can never
+  // inject markup into the page.
+  function paintTags(cell, list) {
+    const view = cell.querySelector(".view");
+    view.textContent = "";
+
+    const names = tagNames(list);
+    if (!names.length) {
+      const dash = document.createElement("span");
+      dash.className = "muted-small";
+      dash.textContent = "-";
+      view.append(dash);
+      return;
+    }
+
+    for (const name of names) {
+      const color = colorFor(name);
+      const pill = document.createElement("a");
+      pill.className = "pill";
+      pill.href = "/?tag=" + encodeURIComponent(name) + (SHOWING_ALL ? "&all=1" : "");
+      pill.style.background = color;
+      pill.style.color = readable(color);
+      pill.textContent = name;
+      view.append(pill);
+    }
+  }
+
   function paint(row, link) {
     row.dataset.short = link.short;
 
@@ -135,6 +248,10 @@
     dest.textContent = link.long;
     dest.href = link.long;
     row.querySelector(".dest .edit").value = link.long;
+
+    const tags = row.querySelector(".tags");
+    paintTags(tags, link.tags);
+    tags.querySelector(".edit").value = link.tags || "";
   }
 
   // Built element by element rather than from a string, so a destination can
@@ -167,6 +284,17 @@
     destEdit.setAttribute("aria-label", "Destination");
     dest.append(destView, destEdit);
 
+    const tags = document.createElement("td");
+    tags.className = "tags";
+    const tagsView = document.createElement("span");
+    tagsView.className = "view";
+    const tagsEdit = document.createElement("input");
+    tagsEdit.className = "edit";
+    tagsEdit.type = "text";
+    tagsEdit.setAttribute("list", "tag-names");
+    tagsEdit.setAttribute("aria-label", "Tags");
+    tags.append(tagsView, tagsEdit);
+
     const clicks = document.createElement("td");
     clicks.className = "num";
     clicks.textContent = "0";
@@ -175,7 +303,7 @@
     when.className = "when";
     when.textContent = "Today";
 
-    row.append(code, dest, clicks, when);
+    row.append(code, dest, tags, clicks, when);
 
     if (SHOWING_ALL) {
       const who = document.createElement("td");
@@ -201,11 +329,32 @@
     return row;
   }
 
+  // A tag typed onto a link is created for its owner server-side, so a name the
+  // datalist has never heard of still works. Adding it here keeps the picker
+  // and the pill colours right until the next reload.
+  function rememberTags(list) {
+    const datalist = document.getElementById("tag-names");
+    for (const name of tagNames(list)) {
+      const key = tagKey(name);
+      if (tagColors[key]) {
+        continue;
+      }
+
+      tagColors[key] = DEFAULT_TAG_COLOR;
+      if (datalist) {
+        const option = document.createElement("option");
+        option.value = name;
+        datalist.append(option);
+      }
+    }
+  }
+
   async function save(row) {
     const short = row.dataset.short;
     const payload = {
       short: row.querySelector(".code .edit").value.trim(),
-      long: row.querySelector(".dest .edit").value.trim()
+      long: row.querySelector(".dest .edit").value.trim(),
+      tags: row.querySelector(".tags .edit").value.trim()
     };
 
     if (!payload.long) {
@@ -225,6 +374,7 @@
       return;
     }
 
+    rememberTags(body.tags);
     paint(row, body);
     row.classList.remove("editing");
     clearError();
@@ -264,6 +414,9 @@
       } else if (action === "cancel") {
         row.querySelector(".code .edit").value = row.querySelector(".code .view").textContent;
         row.querySelector(".dest .edit").value = row.querySelector(".dest .view").textContent;
+        row.querySelector(".tags .edit").value = tagNames(
+          Array.from(row.querySelectorAll(".tags .view .pill")).map(function (pill) { return pill.textContent; }).join(",")
+        ).join(",");
         row.classList.remove("editing");
         clearError();
       } else if (action === "save") {
@@ -289,6 +442,10 @@
     if (short) {
       payload.short = short;
     }
+    const tags = document.getElementById("tags").value.trim();
+    if (tags) {
+      payload.tags = tags;
+    }
 
     try {
       const response = await send("/link", {
@@ -307,6 +464,8 @@
       resultLink.textContent = url;
       resultLink.href = url;
       result.style.display = "block";
+
+      rememberTags(created.tags);
 
       const rows = rowsBody();
       if (rows) {

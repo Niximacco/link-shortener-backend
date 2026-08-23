@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anthonynixon/link-shortener-backend/internal/config"
+	"github.com/anthonynixon/link-shortener-backend/internal/tags"
 	"github.com/anthonynixon/link-shortener-backend/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -27,6 +28,7 @@ const (
 	DashboardPage = "dashboard.html"
 	MessagePage   = "message.html"
 	UsersPage     = "users.html"
+	TagsPage      = "tags.html"
 )
 
 var pages = map[string]*template.Template{}
@@ -42,10 +44,54 @@ var funcs = template.FuncMap{
 
 		return time.Unix(seconds, 0).UTC().Format("Jan 2, 2006")
 	},
+
+	// hex passes a colour into a style attribute. Everything that ends up in one
+	// goes through here, and what makes that safe is the check rather than the
+	// cast: a value that isn't a plain six digit hex - a colour edited by hand
+	// onto an entity in the console, say - becomes the default instead of being
+	// written into the page.
+	"hex": hex,
+
+	// tagColor is hex, looking the colour up by tag name first. A name with no
+	// tag entity behind it gets the default: a link can carry a tag that isn't
+	// in the list, either somebody else's on a link an admin is looking at or
+	// one typed onto a link a moment before its entity was written.
+	"tagColor": func(colors map[string]string, name string) template.CSS {
+		return hex(colors[tags.Key(name)])
+	},
+
+	// readable picks black or white text for a background colour, so a pill is
+	// legible whatever colour was chosen for it.
+	"readable": func(color template.CSS) template.CSS {
+		return template.CSS(tags.Readable(string(color)))
+	},
+
+	// tagCount reads a per-tag link count, keyed the way tags are compared.
+	"tagCount": func(counts map[string]int, name string) int {
+		return counts[tags.Key(name)]
+	},
+
+	// sameTag reports whether two names are the same tag, so the filter chips
+	// can mark the active one.
+	"sameTag": func(left string, right string) bool {
+		return left != "" && tags.Key(left) == tags.Key(right)
+	},
+}
+
+// hex is the one way a colour reaches a style attribute. Marking a value as
+// template.CSS turns off the escaping that would otherwise protect the page, so
+// the check in front of the cast is the whole point: what comes back is either
+// a six digit hex value or the default, and never anything a caller wrote.
+func hex(color string) template.CSS {
+	if !tags.ValidColor(color) {
+		return template.CSS(tags.DefaultColor)
+	}
+
+	return template.CSS(color)
 }
 
 func init() {
-	for _, page := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage, UsersPage} {
+	for _, page := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage, UsersPage, TagsPage} {
 		tmpl := template.New(page).Funcs(funcs)
 		pages[page] = template.Must(tmpl.ParseFS(templateFS, "templates/base.html", "templates/"+page))
 	}
@@ -70,6 +116,38 @@ type Page struct {
 	IsAdmin    bool
 	ShowingAll bool
 	Limit      int
+
+	// Tag state. Tags is the caller's own set, whatever list is being shown
+	// beside it; Tag is the one the list is filtered to, empty for no filter.
+	Tags      []types.Tag
+	Tag       string
+	TagCounts map[string]int
+	Palette   []string
+}
+
+// TagColors maps a tag name to the colour it should be drawn in, keyed the way
+// tags are compared. A link can carry a tag whose entity isn't in the list -
+// somebody else's tag on a link an admin is looking at, or one typed onto a
+// link a moment before its entity was written - so a lookup that misses is
+// normal and gets the default colour.
+//
+// Colours are checked on the way in, so what this returns is safe to write into
+// a style attribute and safe to hand to a script that will do the same. That
+// matters because it is the only shape a colour reaches the page in: the pages
+// build their pills from this rather than from Tags directly.
+func (p Page) TagColors() map[string]string {
+	colors := make(map[string]string, len(p.Tags))
+	for _, tag := range p.Tags {
+		colors[tags.Key(tag.Name)] = string(hex(tag.Color))
+	}
+
+	return colors
+}
+
+// DefaultTagColor is the colour a name with no tag entity behind it is drawn
+// in, for the scripts that build a pill in the browser.
+func (p Page) DefaultTagColor() string {
+	return tags.DefaultColor
 }
 
 // New starts a Page with the site-wide values already filled in.

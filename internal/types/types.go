@@ -1,6 +1,10 @@
 package types
 
-import "time"
+import (
+	"time"
+
+	"github.com/anthonynixon/link-shortener-backend/internal/tags"
+)
 
 type Link struct {
 	Short     string `json:"short"`
@@ -8,6 +12,29 @@ type Link struct {
 	Created   int64  `json:"created"`
 	CreatedBy string `json:"created_by"`
 	Clicks    int    `json:"clicks"`
+	// Tags is the link's labels as one comma separated string, which is how the
+	// property is stored: a link's whole labelling arrives with the entity, and
+	// there is no repeated property costing an index row per tag.
+	Tags string `json:"tags"`
+}
+
+// TagNames is the link's tags as a list, for anything that renders or compares
+// them one at a time.
+func (l Link) TagNames() []string {
+	return tags.Parse(l.Tags)
+}
+
+// Tag is a label in the "tag" kind, owned by the user who made it. The datastore
+// key name is "<owner email>:<lower-cased name>", so two people can each have a
+// tag called "work" and neither can have two of them.
+//
+// Links carry tags by name rather than by key. Renaming or deleting a tag is
+// carried through to its owner's links at that point.
+type Tag struct {
+	Name    string `json:"name"`
+	Color   string `json:"color"`
+	Owner   string `json:"owner"`
+	Created int64  `json:"created"`
 }
 
 // User is an entity in the "user" kind. Presence of an entity is what grants
