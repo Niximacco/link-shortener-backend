@@ -10,9 +10,9 @@ var (
 	// BASE_URL is the public origin the service is reached at. It is used to
 	// build magic links and to show people their finished short links, so it has
 	// to match what the browser actually sees.
-	BASE_URL = "https://links.ajn.me"
+	BASE_URL = "https://ajn.me"
 	// SITE_NAME is what the pages and login emails call this service.
-	SITE_NAME = "links.ajn.me"
+	SITE_NAME = "ajn.me"
 )
 
 func init() {

@@ -62,9 +62,9 @@ back to a goroutine.
 | `DATASTORE_NAMESPACE`   | yes      | -                   | Fatal if unset. Also the JWT audience                     |
 | `JWT_SIGNING_KEY`       | yes      | -                   | Fatal if unset. Rotating it signs everybody out           |
 | `RESEND_API_KEY`        | yes      | -                   | Without it login is disabled and returns 503              |
-| `MAIL_FROM`             | yes      | -                   | e.g. `links.ajn.me <login@ajn.me>`, on a verified domain  |
-| `APP_BASE_URL`          | yes      | `https://links.ajn.me` | Public origin. Magic links are built from it           |
-| `SITE_NAME`             | no       | `links.ajn.me`      | Name shown on the pages and in the login email            |
+| `MAIL_FROM`             | yes      | -                   | e.g. `ajn.me <login@ajn.me>`, on a verified domain        |
+| `APP_BASE_URL`          | yes      | `https://ajn.me`    | Public origin. Magic links are built from it              |
+| `SITE_NAME`             | no       | `ajn.me`            | Name shown on the pages and in the login email            |
 | `SESSION_COOKIE_NAME`   | no       | `ls_session`        |                                                           |
 | `COOKIE_DOMAIN`         | no       | empty (host-only)   | Only set this to share the session across subdomains      |
 | `COOKIE_SECURE`         | no       | `true`              | Set `false` only for plain http local development         |
