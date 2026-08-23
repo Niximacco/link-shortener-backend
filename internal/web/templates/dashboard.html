@@ -1,0 +1,83 @@
+{{define "content"}}
+<main class="wide">
+  <h1>Short links</h1>
+  <p>Point a short code at any url. Leave the code blank and one gets generated.</p>
+  <div class="banner" id="error" style="display:none"></div>
+  <form id="create">
+    <label for="long">Destination</label>
+    <input id="long" type="text" name="long" placeholder="example.com/a/very/long/path" autocomplete="off" autofocus required>
+    <label for="short">Short code <span class="muted-small">(optional)</span></label>
+    <input id="short" type="text" name="short" placeholder="LAUNCH" autocomplete="off" spellcheck="false">
+    <button type="submit" id="submit">Create short link</button>
+  </form>
+  <div class="result" id="result">
+    <a id="result-link" href="#" target="_blank" rel="noopener"></a>
+    <button class="link" type="button" id="copy">Copy</button>
+  </div>
+  <div class="row">
+    <span class="who">Signed in as {{.Email}}</span>
+    <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
+  </div>
+</main>
+<script>
+  const BASE_URL = {{.BaseURL}};
+  const form = document.getElementById("create");
+  const errorBox = document.getElementById("error");
+  const result = document.getElementById("result");
+  const resultLink = document.getElementById("result-link");
+  const submit = document.getElementById("submit");
+
+  function fail(message) {
+    errorBox.textContent = message;
+    errorBox.style.display = "block";
+    result.style.display = "none";
+  }
+
+  form.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    errorBox.style.display = "none";
+    result.style.display = "none";
+    submit.disabled = true;
+
+    const payload = { long: document.getElementById("long").value.trim() };
+    const short = document.getElementById("short").value.trim();
+    if (short) {
+      payload.short = short;
+    }
+
+    try {
+      const response = await fetch("/link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.status === 401) {
+        window.location = "/login";
+        return;
+      }
+
+      const body = await response.json();
+      if (!response.ok) {
+        fail(response.status === 409 ? "That short code is already taken." : (body.error || "Something went wrong."));
+        return;
+      }
+
+      const url = BASE_URL + "/" + body.short;
+      resultLink.textContent = url;
+      resultLink.href = url;
+      result.style.display = "block";
+      form.reset();
+      document.getElementById("long").focus();
+    } catch (err) {
+      fail("Could not reach the server.");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+
+  document.getElementById("copy").addEventListener("click", function () {
+    navigator.clipboard.writeText(resultLink.textContent);
+  });
+</script>
+{{end}}

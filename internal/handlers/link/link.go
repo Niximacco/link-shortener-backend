@@ -6,6 +6,7 @@ import (
 	data "github.com/anthonynixon/link-shortener-backend/internal/cloud"
 	"github.com/anthonynixon/link-shortener-backend/internal/shortcode"
 	"github.com/anthonynixon/link-shortener-backend/internal/types"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -15,8 +16,8 @@ import (
 
 func AddLinkV1(router *gin.Engine) {
 	router.GET("/:short", RedirectToLink)
-	router.GET("/link/:short", GetLongLink)
-	router.POST("/link", CreateShortLink)
+	router.GET("/link/:short", auth.Required(), GetLongLink)
+	router.POST("/link", auth.Required(), CreateShortLink)
 }
 
 func getLinkDetails(short string) (link types.Link, err error) {
@@ -25,12 +26,6 @@ func getLinkDetails(short string) (link types.Link, err error) {
 }
 
 func GetLongLink(c *gin.Context) {
-	_, err := auth.ParseToken(c.GetHeader("Authorization"))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-
 	short := c.Param("short")
 	link, err := getLinkDetails(short)
 	if err != nil {
@@ -50,25 +45,25 @@ func RedirectToLink(c *gin.Context) {
 		return
 	}
 
-	go data.IncrementCountInDatastore(link)
+	// Counted before the redirect is written, not in a goroutine after it.
+	// Cloud Run throttles the container's cpu as soon as the response goes out,
+	// so work started here would often be frozen before it reached datastore.
+	if err = data.IncrementClicks(link.Short); err != nil {
+		log.Printf("could not count a click on %s: %s", link.Short, err.Error())
+	}
+
 	c.Redirect(http.StatusFound, link.Long)
 }
 
 func CreateShortLink(c *gin.Context) {
-	username, err := auth.ParseToken(c.GetHeader("Authorization"))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-
 	var newLink types.Link
-	err = c.ShouldBindJSON(&newLink)
+	err := c.ShouldBindJSON(&newLink)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	newLink.CreatedBy = username
+	newLink.CreatedBy = auth.Email(c)
 
 	if newLink.Short == "" {
 		newLink.Short = shortcode.New()

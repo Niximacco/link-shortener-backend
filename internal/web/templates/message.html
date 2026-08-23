@@ -1,0 +1,8 @@
+{{define "content"}}
+<main>
+  <h1>{{.Title}}</h1>
+  {{if .Error}}<div class="banner">{{.Error}}</div>{{end}}
+  {{if .Message}}<p>{{.Message}}</p>{{end}}
+  <form method="get" action="/login"><button type="submit">Back to sign in</button></form>
+</main>
+{{end}}

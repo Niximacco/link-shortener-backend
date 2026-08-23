@@ -1,0 +1,134 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{{.Title}} &middot; {{.SiteName}}</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%94%97%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --line: #e3e3e6;
+    --accent: #1d1d1f;
+    --accent-text: #ffffff;
+    --error-bg: #fdeceb;
+    --error-text: #a1281d;
+    --ok-bg: #eaf6ed;
+    --ok-text: #1c6b34;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131316;
+      --card: #1c1c20;
+      --text: #f2f2f4;
+      --muted: #9a9aa2;
+      --line: #2e2e34;
+      --accent: #f2f2f4;
+      --accent-text: #131316;
+      --error-bg: #3a1f1c;
+      --error-text: #ffb4aa;
+      --ok-bg: #1b2f22;
+      --ok-text: #96d9ad;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  main {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 32px;
+  }
+  main.wide { max-width: 560px; }
+  h1 { margin: 0 0 6px; font-size: 21px; letter-spacing: -0.01em; }
+  p { margin: 0 0 20px; color: var(--muted); font-size: 15px; }
+  p.tight { margin-bottom: 8px; }
+  label { display: block; margin-bottom: 6px; font-size: 13px; font-weight: 600; }
+  input[type=email], input[type=text], input[type=url] {
+    width: 100%;
+    padding: 11px 12px;
+    margin-bottom: 16px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+  }
+  input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button {
+    width: 100%;
+    padding: 11px 16px;
+    border: 0;
+    border-radius: 9px;
+    background: var(--accent);
+    color: var(--accent-text);
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.88; }
+  button.link {
+    width: auto;
+    padding: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 500;
+    text-decoration: underline;
+  }
+  a { color: var(--text); }
+  .banner {
+    padding: 10px 12px;
+    margin-bottom: 18px;
+    border-radius: 9px;
+    font-size: 14px;
+    background: var(--error-bg);
+    color: var(--error-text);
+  }
+  .banner.ok { background: var(--ok-bg); color: var(--ok-text); }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 18px;
+    margin-top: 22px;
+    border-top: 1px solid var(--line);
+  }
+  .row form { margin: 0; }
+  .who { font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .result {
+    display: none;
+    padding: 12px;
+    margin-top: 18px;
+    border-radius: 9px;
+    background: var(--ok-bg);
+    color: var(--ok-text);
+    font-size: 14px;
+    overflow-wrap: anywhere;
+  }
+  .result a { color: inherit; font-weight: 600; }
+  .muted-small { font-size: 13px; color: var(--muted); }
+</style>
+</head>
+<body>
+{{template "content" .}}
+</body>
+</html>{{end}}
