@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/anthonynixon/link-shortener-backend/internal/auth"
+	data "github.com/anthonynixon/link-shortener-backend/internal/cloud"
 	"github.com/anthonynixon/link-shortener-backend/internal/email"
 	"github.com/anthonynixon/link-shortener-backend/internal/magiclink"
 	"github.com/anthonynixon/link-shortener-backend/internal/web"
@@ -28,8 +29,31 @@ func AddAuthV1(router *gin.Engine) {
 }
 
 func Dashboard(c *gin.Context) {
+	address := auth.Email(c)
+	admin := data.IsAdmin(address)
+
+	// Showing everybody's links is an admin-only view, and only on request.
+	showingAll := admin && c.Query("all") != ""
+
+	owner := address
+	if showingAll {
+		owner = ""
+	}
+
 	page := web.New("Short links")
-	page.Email = auth.Email(c)
+	page.Email = address
+	page.IsAdmin = admin
+	page.ShowingAll = showingAll
+	page.Limit = data.LINK_LIST_LIMIT
+
+	links, err := data.ListLinks(owner, data.LINK_LIST_LIMIT)
+	if err != nil {
+		// The list failing shouldn't cost you the rest of the dashboard.
+		log.Printf("could not list links: %s", err.Error())
+		page.Error = "Your links couldn't be loaded. Creating one still works."
+	}
+
+	page.Links = links
 
 	web.Render(c, http.StatusOK, web.DashboardPage, page)
 }

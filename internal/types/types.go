@@ -19,6 +19,8 @@ type User struct {
 	LastLogin int64  `json:"last_login"`
 	// LastLinkSent is used to throttle how often magic links can be requested.
 	LastLinkSent int64 `json:"last_link_sent"`
+	// Admin lets this user see and change every link, not just their own.
+	Admin bool `json:"admin"`
 	// Disabled keeps the entity around for history while blocking logins.
 	Disabled bool `json:"disabled"`
 }

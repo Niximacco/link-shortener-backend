@@ -26,21 +26,55 @@ The API also still accepts `Authorization: bearer <token>` for scripts.
 
 ## Routes
 
-| Route                     | Auth      | What it does                                    |
-|---------------------------|-----------|-------------------------------------------------|
-| `GET /`                   | session   | Dashboard: create a short link, sign out        |
-| `GET /login`              | -         | Sign in form                                    |
-| `POST /login`             | -         | Emails a magic link                             |
-| `GET /auth/callback`      | -         | Confirm step for an emailed link                |
-| `POST /auth/callback`     | -         | Spends the token, starts the session            |
-| `POST /logout`            | -         | Clears the session cookie                       |
-| `GET /api/auth/session`   | session   | `{"email": "..."}` for the current session      |
-| `GET /:short`             | -         | Public redirect, counts a click                 |
-| `GET /link/:short`        | session   | Link details as json                            |
-| `POST /link`              | session   | Creates a short link                            |
+| Route                     | Auth      | What it does                                       |
+|---------------------------|-----------|----------------------------------------------------|
+| `GET /`                   | session   | Dashboard: create, list, edit and delete links      |
+| `GET /login`              | -         | Sign in form                                        |
+| `POST /login`             | -         | Emails a magic link                                 |
+| `GET /auth/callback`      | -         | Confirm step for an emailed link                    |
+| `POST /auth/callback`     | -         | Spends the token, starts the session                |
+| `POST /logout`            | -         | Clears the session cookie                           |
+| `GET /api/auth/session`   | session   | `{"email": "..."}` for the current session          |
+| `GET /:short`             | -         | Public redirect, counts a click                     |
+| `GET /links`              | session   | Your links as json. Admins add `?all=1` for everyone's |
+| `GET /link/:short`        | session   | Link details as json                                |
+| `POST /link`              | session   | Creates a short link                                |
+| `PATCH /link/:short`      | session   | Changes the destination, the short code, or both    |
+| `DELETE /link/:short`     | session   | Deletes a link                                      |
 
 Static routes win over `/:short`, and short codes are upper-cased before lookup, so `/login` is the
-login page while `/LOGIN` is still a perfectly good short code.
+login page while `/LOGIN` is still a perfectly good short code. Short codes that would collide with
+a route the service serves itself - `link`, `links`, `login`, `logout`, `auth`, `api`, `static` -
+are rejected at creation, along with anything outside `A-Z a-z 0-9 - _`.
+
+## Who can change what
+
+Every link records the address that created it in `CreatedBy`. That is the ownership record.
+
+- A normal user sees only their own links, and can only edit or delete their own.
+- An **admin** sees their own by default and everybody's on request, and can edit or delete
+  anything. Make somebody an admin by setting `Admin` to true on their `user` entity.
+
+Asking to change a link that exists but belongs to somebody else returns **404, not 403**, for a
+normal user - confirming that a code exists but is not yours is more than the answer needs to give
+away. Admins get a real 403, since they can already see everything.
+
+Ownership is checked **inside** the datastore transaction that does the write, so it cannot be
+raced: a link cannot change hands between the check and the update.
+
+Two consequences worth knowing:
+
+- **Links created before magic-link login have `CreatedBy` set to whatever the old `/token`
+  endpoint hardcoded.** If you sign in as a different address, those links are not yours and will
+  not appear in your list. Sign in as that address, make yourself an admin, or rewrite the
+  `CreatedBy` property on the entities.
+- **Links with an empty `CreatedBy` belong to nobody** and are only reachable by an admin.
+
+### Renaming a link
+
+`PATCH` accepts a new `short`, which moves the entity, because the short code *is* the datastore
+key. Clicks and the original creation details come along. The old code stops resolving immediately,
+so anything already sharing it gets a 404 - that is inherent to renaming, not a bug to work around.
 
 ## Redirects and click counts
 
@@ -84,7 +118,10 @@ Three kinds, all in `DATASTORE_NAMESPACE`:
   grants access.
 - **`magic_link`** - pending login tokens. Key name is the SHA-256 hash of the emailed token.
 
-All three are looked up by key, so no composite indexes are needed.
+The `user` and `magic_link` kinds are looked up by key, and the link list filters on
+`CreatedBy` with no sort order - datastore sorts nothing, the service sorts the page in
+memory - so **no composite indexes are needed**. Past a few thousand links, swap that for a
+`CreatedBy` + `Created` composite index and let datastore do the ordering.
 
 ### Allowing someone to sign in
 
@@ -98,6 +135,7 @@ understands:
 | `Created`      | integer | Unix seconds, informational                               |
 | `LastLogin`    | integer | Unix seconds, written on every successful sign in         |
 | `LastLinkSent` | integer | Unix seconds, used to throttle links to one per minute    |
+| `Admin`        | boolean | `true` lets them see and change every link, not just their own |
 | `Disabled`     | boolean | `true` blocks sign in without deleting the entity         |
 
 Extra properties are left alone: logins update one property at a time rather than overwriting the

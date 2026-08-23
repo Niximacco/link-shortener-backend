@@ -1,6 +1,9 @@
 package shortcode
 
-import "math/rand"
+import (
+	"math/rand"
+	"strings"
+)
 
 var letters = []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZ123456789")
 var default_len = 6
@@ -29,4 +32,44 @@ func New(opts ...Option) string {
 		b[i] = letters[rand.Intn(len(letters))]
 	}
 	return string(b)
+}
+
+// reserved are the paths the service serves itself. A short code matching one
+// would be shadowed by that route and unreachable, so they can't be claimed.
+var reserved = map[string]bool{
+	"link":   true,
+	"links":  true,
+	"login":  true,
+	"logout": true,
+	"auth":   true,
+	"api":    true,
+	"static": true,
+}
+
+const max_len = 64
+
+// Valid reports whether a short code can be used. Codes end up as a single path
+// segment, so anything that would change the shape of the url - a slash, a
+// query, a space - is out.
+func Valid(short string) bool {
+	if len(short) == 0 || len(short) > max_len {
+		return false
+	}
+
+	if reserved[strings.ToLower(short)] {
+		return false
+	}
+
+	for _, character := range short {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		case character >= '0' && character <= '9':
+		case character == '-' || character == '_':
+		default:
+			return false
+		}
+	}
+
+	return true
 }

@@ -56,7 +56,7 @@
     border-radius: 14px;
     padding: 32px;
   }
-  main.wide { max-width: 560px; }
+  main.wide { max-width: 900px; }
   h1 { margin: 0 0 6px; font-size: 21px; letter-spacing: -0.01em; }
   p { margin: 0 0 20px; color: var(--muted); font-size: 15px; }
   p.tight { margin-bottom: 8px; }
@@ -126,6 +126,64 @@
   }
   .result a { color: inherit; font-weight: 600; }
   .muted-small { font-size: 13px; color: var(--muted); }
+  .fields { display: flex; gap: 14px; }
+  .fields > div { flex: 1; min-width: 0; }
+  .list-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 34px;
+  }
+  .list-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .toggle { font-size: 13px; color: var(--muted); }
+  .empty { margin: 14px 0 0; font-size: 14px; }
+  .scroll { overflow-x: auto; margin-top: 12px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th {
+    padding: 8px 10px 8px 0;
+    border-bottom: 1px solid var(--line);
+    text-align: left;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  td {
+    padding: 10px 10px 10px 0;
+    border-bottom: 1px solid var(--line);
+    vertical-align: middle;
+  }
+  th.num, td.num { text-align: right; padding-right: 14px; }
+  td.code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+  td.dest { max-width: 320px; }
+  td.dest .view {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  td.when, td.who { white-space: nowrap; color: var(--muted); font-size: 13px; }
+  td.actions { white-space: nowrap; text-align: right; }
+  td.actions button { margin-left: 10px; }
+  td .edit {
+    width: 100%;
+    margin: 0;
+    padding: 6px 8px;
+    font-size: 13px;
+  }
+  td.code .edit { width: 120px; }
+  /* Rows carry both a view and an editor; the row's state picks one. */
+  tr .edit, tr [data-action="save"], tr [data-action="cancel"] { display: none; }
+  tr.editing .view, tr.editing [data-action="edit"], tr.editing [data-action="delete"] { display: none; }
+  tr.editing .edit { display: inline-block; }
+  tr.editing [data-action="save"], tr.editing [data-action="cancel"] { display: inline; }
+  tr.editing [data-action="save"] { color: var(--text); font-weight: 600; }
+  @media (max-width: 620px) {
+    .fields { flex-direction: column; gap: 0; }
+    td.dest { max-width: 180px; }
+  }
 </style>
 </head>
 <body>

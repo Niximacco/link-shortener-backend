@@ -3,39 +3,285 @@
   <h1>Short links</h1>
   <p>Point a short code at any url. Leave the code blank and one gets generated.</p>
   <div class="banner" id="error" style="display:none"></div>
+  {{if .Error}}<div class="banner">{{.Error}}</div>{{end}}
   <form id="create">
-    <label for="long">Destination</label>
-    <input id="long" type="text" name="long" placeholder="example.com/a/very/long/path" autocomplete="off" autofocus required>
-    <label for="short">Short code <span class="muted-small">(optional)</span></label>
-    <input id="short" type="text" name="short" placeholder="LAUNCH" autocomplete="off" spellcheck="false">
+    <div class="fields">
+      <div>
+        <label for="long">Destination</label>
+        <input id="long" type="text" name="long" placeholder="example.com/a/very/long/path" autocomplete="off" required>
+      </div>
+      <div>
+        <label for="short">Short code <span class="muted-small">(optional)</span></label>
+        <input id="short" type="text" name="short" placeholder="LAUNCH" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
     <button type="submit" id="submit">Create short link</button>
   </form>
   <div class="result" id="result">
     <a id="result-link" href="#" target="_blank" rel="noopener"></a>
     <button class="link" type="button" id="copy">Copy</button>
   </div>
+
+  <div class="list-head">
+    <h2>{{if .ShowingAll}}All links{{else}}Your links{{end}} <span class="muted-small" id="count">({{len .Links}})</span></h2>
+    {{if .IsAdmin}}
+      {{if .ShowingAll}}
+        <a class="toggle" href="/">Show only mine</a>
+      {{else}}
+        <a class="toggle" href="/?all=1">Show everyone</a>
+      {{end}}
+    {{end}}
+  </div>
+
+  {{if .Links}}
+    {{if ge (len .Links) .Limit}}
+      <p class="muted-small">Showing the first {{.Limit}} links.</p>
+    {{end}}
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Code</th>
+            <th>Destination</th>
+            <th class="num">Clicks</th>
+            <th>Created</th>
+            {{if .ShowingAll}}<th>Owner</th>{{end}}
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          {{range .Links}}
+          <tr data-short="{{.Short}}">
+            <td class="code">
+              <a class="view" href="{{$.BaseURL}}/{{.Short}}" target="_blank" rel="noopener">{{.Short}}</a>
+              <input class="edit" type="text" value="{{.Short}}" spellcheck="false" aria-label="Short code">
+            </td>
+            <td class="dest">
+              <a class="view" href="{{.Long}}" target="_blank" rel="noopener">{{.Long}}</a>
+              <input class="edit" type="text" value="{{.Long}}" aria-label="Destination">
+            </td>
+            <td class="num">{{.Clicks}}</td>
+            <td class="when">{{date .Created}}</td>
+            {{if $.ShowingAll}}<td class="who">{{if .CreatedBy}}{{.CreatedBy}}{{else}}-{{end}}</td>{{end}}
+            <td class="actions">
+              <button class="link" type="button" data-action="edit">Edit</button>
+              <button class="link" type="button" data-action="delete">Delete</button>
+              <button class="link save" type="button" data-action="save">Save</button>
+              <button class="link" type="button" data-action="cancel">Cancel</button>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{else}}
+    <p class="empty">{{if .ShowingAll}}Nobody has created a link yet.{{else}}You have not created a link yet.{{end}}</p>
+  {{end}}
+
   <div class="row">
-    <span class="who">Signed in as {{.Email}}</span>
+    <span class="who">Signed in as {{.Email}}{{if .IsAdmin}} &middot; admin{{end}}</span>
     <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
   </div>
 </main>
 <script>
   const BASE_URL = {{.BaseURL}};
-  const form = document.getElementById("create");
+  const SHOWING_ALL = {{.ShowingAll}};
+  const MY_EMAIL = {{.Email}};
+
   const errorBox = document.getElementById("error");
   const result = document.getElementById("result");
   const resultLink = document.getElementById("result-link");
   const submit = document.getElementById("submit");
+  const count = document.getElementById("count");
 
   function fail(message) {
     errorBox.textContent = message;
     errorBox.style.display = "block";
-    result.style.display = "none";
   }
 
-  form.addEventListener("submit", async function (event) {
-    event.preventDefault();
+  function clearError() {
     errorBox.style.display = "none";
+  }
+
+  // A 401 means the session went away while the page was open.
+  async function send(url, options) {
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+      window.location = "/login";
+      throw new Error("signed out");
+    }
+    return response;
+  }
+
+  function rowsBody() {
+    return document.getElementById("rows");
+  }
+
+  function refreshCount() {
+    const body = rowsBody();
+    if (count && body) {
+      count.textContent = "(" + body.querySelectorAll("tr").length + ")";
+    }
+  }
+
+  function paint(row, link) {
+    row.dataset.short = link.short;
+
+    const code = row.querySelector(".code .view");
+    code.textContent = link.short;
+    code.href = BASE_URL + "/" + link.short;
+    row.querySelector(".code .edit").value = link.short;
+
+    const dest = row.querySelector(".dest .view");
+    dest.textContent = link.long;
+    dest.href = link.long;
+    row.querySelector(".dest .edit").value = link.long;
+  }
+
+  // Built element by element rather than from a string, so a destination can
+  // never inject markup into the page.
+  function buildRow(link) {
+    const row = document.createElement("tr");
+
+    const code = document.createElement("td");
+    code.className = "code";
+    const codeView = document.createElement("a");
+    codeView.className = "view";
+    codeView.target = "_blank";
+    codeView.rel = "noopener";
+    const codeEdit = document.createElement("input");
+    codeEdit.className = "edit";
+    codeEdit.type = "text";
+    codeEdit.spellcheck = false;
+    codeEdit.setAttribute("aria-label", "Short code");
+    code.append(codeView, codeEdit);
+
+    const dest = document.createElement("td");
+    dest.className = "dest";
+    const destView = document.createElement("a");
+    destView.className = "view";
+    destView.target = "_blank";
+    destView.rel = "noopener";
+    const destEdit = document.createElement("input");
+    destEdit.className = "edit";
+    destEdit.type = "text";
+    destEdit.setAttribute("aria-label", "Destination");
+    dest.append(destView, destEdit);
+
+    const clicks = document.createElement("td");
+    clicks.className = "num";
+    clicks.textContent = "0";
+
+    const when = document.createElement("td");
+    when.className = "when";
+    when.textContent = "Today";
+
+    row.append(code, dest, clicks, when);
+
+    if (SHOWING_ALL) {
+      const who = document.createElement("td");
+      who.className = "who";
+      who.textContent = MY_EMAIL;
+      row.append(who);
+    }
+
+    const actions = document.createElement("td");
+    actions.className = "actions";
+    const buttons = [["edit", "Edit"], ["delete", "Delete"], ["save", "Save"], ["cancel", "Cancel"]];
+    for (const pair of buttons) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = pair[0] === "save" ? "link save" : "link";
+      button.dataset.action = pair[0];
+      button.textContent = pair[1];
+      actions.append(button);
+    }
+    row.append(actions);
+
+    paint(row, link);
+    return row;
+  }
+
+  async function save(row) {
+    const short = row.dataset.short;
+    const payload = {
+      short: row.querySelector(".code .edit").value.trim(),
+      long: row.querySelector(".dest .edit").value.trim()
+    };
+
+    if (!payload.long) {
+      fail("A link needs a destination.");
+      return;
+    }
+
+    const response = await send("/link/" + encodeURIComponent(short), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const body = await response.json();
+    if (!response.ok) {
+      fail(body.error || "Could not save that change.");
+      return;
+    }
+
+    paint(row, body);
+    row.classList.remove("editing");
+    clearError();
+  }
+
+  async function remove(row) {
+    const short = row.dataset.short;
+    if (!window.confirm("Delete " + short + "? Anyone using that link will get a 404.")) {
+      return;
+    }
+
+    const response = await send("/link/" + encodeURIComponent(short), { method: "DELETE" });
+    if (!response.ok) {
+      const body = await response.json().catch(function () { return {}; });
+      fail(body.error || "Could not delete that link.");
+      return;
+    }
+
+    row.remove();
+    refreshCount();
+    clearError();
+  }
+
+  document.addEventListener("click", async function (event) {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+
+    const row = button.closest("tr");
+    const action = button.dataset.action;
+
+    try {
+      if (action === "edit") {
+        row.classList.add("editing");
+        row.querySelector(".dest .edit").focus();
+      } else if (action === "cancel") {
+        row.querySelector(".code .edit").value = row.querySelector(".code .view").textContent;
+        row.querySelector(".dest .edit").value = row.querySelector(".dest .view").textContent;
+        row.classList.remove("editing");
+        clearError();
+      } else if (action === "save") {
+        await save(row);
+      } else if (action === "delete") {
+        await remove(row);
+      }
+    } catch (err) {
+      if (err && err.message !== "signed out") {
+        fail("Could not reach the server.");
+      }
+    }
+  });
+
+  document.getElementById("create").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    clearError();
     result.style.display = "none";
     submit.disabled = true;
 
@@ -46,31 +292,38 @@
     }
 
     try {
-      const response = await fetch("/link", {
+      const response = await send("/link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
       });
 
-      if (response.status === 401) {
-        window.location = "/login";
-        return;
-      }
-
-      const body = await response.json();
+      const created = await response.json();
       if (!response.ok) {
-        fail(response.status === 409 ? "That short code is already taken." : (body.error || "Something went wrong."));
+        fail(created.error || "Something went wrong.");
         return;
       }
 
-      const url = BASE_URL + "/" + body.short;
+      const url = BASE_URL + "/" + created.short;
       resultLink.textContent = url;
       resultLink.href = url;
       result.style.display = "block";
-      form.reset();
+
+      const rows = rowsBody();
+      if (rows) {
+        rows.prepend(buildRow(created));
+        refreshCount();
+      } else {
+        // First ever link: there is no table on the page yet.
+        window.location.reload();
+      }
+
+      event.target.reset();
       document.getElementById("long").focus();
     } catch (err) {
-      fail("Could not reach the server.");
+      if (!err || err.message !== "signed out") {
+        fail("Could not reach the server.");
+      }
     } finally {
       submit.disabled = false;
     }

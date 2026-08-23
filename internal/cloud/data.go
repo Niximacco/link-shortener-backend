@@ -8,6 +8,7 @@ import (
 	"github.com/anthonynixon/link-shortener-backend/internal/types"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -18,6 +19,7 @@ var namespace string
 
 var AlreadyExistsErr error
 var NotFoundErr = errors.New("link not found in datastore")
+var NotOwnedErr = errors.New("that link belongs to somebody else")
 
 var (
 	UserNotFoundErr  = errors.New("user not found in datastore")
@@ -76,22 +78,18 @@ func GetLink(short string) (link types.Link, err error) {
 }
 
 func NewLink(newLink types.Link) (err error) {
-	if !strings.HasPrefix(newLink.Long, "https://") && !strings.HasPrefix(newLink.Long, "http://") {
-		newLink.Long = fmt.Sprintf("https://%s", newLink.Long)
-	}
-	linkKey := datastore.NameKey("link", strings.ToUpper(newLink.Short), nil)
-	linkKey.Namespace = namespace
+	newLink.Long = normalizeLong(newLink.Long)
+	key := linkKey(newLink.Short)
 	_, err = datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
 		// We first check that there is no entity stored with the given key.
 		var empty types.Link
-		if err = tx.Get(linkKey, &empty); err != datastore.ErrNoSuchEntity {
-			fmt.Printf("empty?: %v\n", empty)
+		if err = tx.Get(key, &empty); err != datastore.ErrNoSuchEntity {
 			return AlreadyExistsErr
 		}
 
 		// If there was no matching entity, store it now.
 		newLink.Short = strings.ToUpper(newLink.Short)
-		_, err = tx.Put(linkKey, &newLink)
+		_, err = tx.Put(key, &newLink)
 		return err
 	})
 
@@ -104,18 +102,17 @@ func NewLink(newLink types.Link) (err error) {
 // link the redirect handler already has was fetched outside it, and two clicks
 // landing at once would both increment the same stale count and lose one.
 func IncrementClicks(short string) error {
-	linkKey := datastore.NameKey("link", strings.ToUpper(short), nil)
-	linkKey.Namespace = namespace
+	key := linkKey(short)
 
 	_, err := datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
 		var link types.Link
-		if err := tx.Get(linkKey, &link); err != nil {
+		if err := tx.Get(key, &link); err != nil {
 			return err
 		}
 
 		link.Clicks++
 
-		_, err := tx.Put(linkKey, &link)
+		_, err := tx.Put(key, &link)
 		return err
 	})
 
@@ -126,6 +123,184 @@ func IncrementClicks(short string) error {
 	}
 
 	return err
+}
+
+// LINK_LIST_LIMIT caps how many links a dashboard page will load. The query
+// carries no sort order on purpose: sorting in datastore alongside the
+// CreatedBy filter would need a composite index, and at this size sorting the
+// results here is free. Past a few thousand links, add the index instead.
+const LINK_LIST_LIMIT = 500
+
+// normalizeLong makes sure a destination is something a browser can be sent to.
+func normalizeLong(long string) string {
+	long = strings.TrimSpace(long)
+	if long != "" && !strings.HasPrefix(long, "https://") && !strings.HasPrefix(long, "http://") {
+		long = fmt.Sprintf("https://%s", long)
+	}
+
+	return long
+}
+
+func linkKey(short string) *datastore.Key {
+	key := datastore.NameKey("link", strings.ToUpper(short), nil)
+	key.Namespace = namespace
+	return key
+}
+
+// ListLinks returns links newest first. An empty createdBy returns everybody's,
+// which is what an admin viewing the whole service gets.
+func ListLinks(createdBy string, limit int) (links []types.Link, err error) {
+	query := datastore.NewQuery("link").Namespace(namespace)
+	if createdBy != "" {
+		query = query.FilterField("CreatedBy", "=", createdBy)
+	}
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	_, err = datastoreClient.GetAll(ctx, query, &links)
+	if err = tolerateFieldMismatch(err); err != nil {
+		return nil, err
+	}
+
+	if links == nil {
+		links = []types.Link{}
+	}
+
+	sort.Slice(links, func(i, j int) bool {
+		if links[i].Created != links[j].Created {
+			return links[i].Created > links[j].Created
+		}
+		return links[i].Short < links[j].Short
+	})
+
+	return links, nil
+}
+
+// UpdateLink changes a link's destination, its short code, or both, and returns
+// what the link looks like afterwards.
+//
+// requireOwner is the ownership check: pass the caller's email to limit them to
+// their own links, or "" for an admin who may change anything. It is enforced
+// inside the transaction, so ownership can't change between the check and the
+// write.
+//
+// Renaming means moving the entity, since the short code is its key. Clicks and
+// the original creation details come along, and the old code stops resolving.
+func UpdateLink(short string, newShort string, newLong string, requireOwner string) (link types.Link, err error) {
+	oldKey := linkKey(short)
+	renaming := newShort != "" && !strings.EqualFold(newShort, short)
+
+	_, err = datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
+		var stored types.Link
+		if err := tx.Get(oldKey, &stored); err != nil {
+			if errors.Is(err, datastore.ErrNoSuchEntity) {
+				return NotFoundErr
+			}
+			if !isFieldMismatch(err) {
+				return err
+			}
+		}
+
+		if requireOwner != "" && stored.CreatedBy != requireOwner {
+			return NotOwnedErr
+		}
+
+		if newLong != "" {
+			stored.Long = normalizeLong(newLong)
+		}
+
+		writeKey := oldKey
+		if renaming {
+			writeKey = linkKey(newShort)
+
+			var occupant types.Link
+			if err := tx.Get(writeKey, &occupant); err != datastore.ErrNoSuchEntity {
+				if err == nil || isFieldMismatch(err) {
+					return AlreadyExistsErr
+				}
+				return err
+			}
+
+			stored.Short = strings.ToUpper(newShort)
+		}
+
+		if _, err := tx.Put(writeKey, &stored); err != nil {
+			return err
+		}
+
+		if renaming {
+			if err := tx.Delete(oldKey); err != nil {
+				return err
+			}
+		}
+
+		link = stored
+		return nil
+	})
+
+	if err != nil {
+		return types.Link{}, err
+	}
+
+	return link, nil
+}
+
+// DeleteLink removes a link. requireOwner works the same as in UpdateLink.
+func DeleteLink(short string, requireOwner string) error {
+	key := linkKey(short)
+
+	_, err := datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
+		var stored types.Link
+		if err := tx.Get(key, &stored); err != nil {
+			if errors.Is(err, datastore.ErrNoSuchEntity) {
+				return NotFoundErr
+			}
+			if !isFieldMismatch(err) {
+				return err
+			}
+		}
+
+		if requireOwner != "" && stored.CreatedBy != requireOwner {
+			return NotOwnedErr
+		}
+
+		return tx.Delete(key)
+	})
+
+	return err
+}
+
+// tolerateFieldMismatch drops errors that only say an entity carried a property
+// this struct doesn't have. Everything the struct does know about still loaded.
+func tolerateFieldMismatch(err error) error {
+	if err == nil || isFieldMismatch(err) {
+		return nil
+	}
+
+	// GetAll reports per-entity problems as a MultiError, which doesn't unwrap.
+	var multi datastore.MultiError
+	if errors.As(err, &multi) {
+		for _, single := range multi {
+			if single != nil && !isFieldMismatch(single) {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return err
+}
+
+// IsAdmin reports whether an email belongs to an admin. Anything that goes
+// wrong reading the user answers no: a failed lookup must never widen access.
+func IsAdmin(email string) bool {
+	user, err := GetUser(email)
+	if err != nil {
+		return false
+	}
+
+	return user.Admin
 }
 
 // NormalizeEmail is how an email address is keyed everywhere: trimmed and
