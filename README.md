@@ -24,6 +24,39 @@ session, and the session cookie slides forward every time you come back.
 
 The API also still accepts `Authorization: bearer <token>` for scripts.
 
+## Rate limits
+
+There is no captcha, because the thing a captcha would guard is already shut. `POST /login` only
+mails an address that is in the `user` kind, and that check happens *before* anything is sent, so a
+bot working through guessed addresses gets the same "check your email" page as everybody else and
+costs nothing but a datastore read. Nothing is emailed to a stranger, ever.
+
+What is left to bound is a caller who knows, or guesses, an address that really is on the list.
+Four limits stack up:
+
+| Limit                        | Scope              | Where it lives              |
+|------------------------------|--------------------|-----------------------------|
+| One link per **60 seconds**  | Per email address  | `LastLinkSent` in datastore |
+| **5** links per hour         | Per email address  | `RecentLinkSents` in datastore |
+| **15** links per day         | Per email address  | `RecentLinkSents` in datastore |
+| **10** posts per minute to `/login`, **20** to `/auth/callback` | Per client address | In memory, per instance |
+
+The per address caps are the ones that bound the email bill: whatever happens, this service cannot
+send more than `users x 15` login emails in a day. They are counted from datastore, so they hold
+across every running instance. Being capped returns the same page as a link going out, so the form
+still cannot be used to work out which addresses are real.
+
+The per address caps have one gap worth knowing about: the check reads the user, then the email is
+sent, then the send is recorded. Two requests for the same address arriving at the same instant can
+both pass the check. That is bounded by how many land together rather than by the cap, and the
+sixty second throttle keeps it small, but it is not a hard ceiling.
+
+The per connection limits are a brake on floods, not a promise: they live in memory, so with several
+instances up the real ceiling is the limit times the instance count. They protect datastore reads and
+instance time rather than the email budget. A caller over one gets a 429 with `Retry-After`. Requests
+whose origin cannot be established are **not** limited - see `TRUSTED_PROXY_DEPTH` above, and
+`internal/ratelimit` for why guessing at an identity is worse than not having one.
+
 ## Routes
 
 | Route                     | Auth      | What it does                                       |
@@ -109,6 +142,8 @@ back to a goroutine.
 | `COOKIE_SECURE`         | no       | `true`              | Set `false` only for plain http local development         |
 | `PORT`                  | no       | `8080`              | Set by Cloud Run                                          |
 | `mode`                  | no       | -                   | `debug` keeps gin in debug mode                           |
+| `TRUSTED_PROXY_DEPTH`   | no       | `0`                 | Proxy hops in front of this service that append to `X-Forwarded-For`. `0` suits a Cloud Run domain mapping; add one per extra load balancer or CDN |
+| `TRUSTED_PROXY_DEBUG`   | no       | unset               | Set to anything to log how each caller's address was resolved, to check the setting above against real traffic |
 
 `TEMP_PASS` is gone. The `POST /token` endpoint it guarded has been removed - it handed out a token
 to anyone who sent a matching `password` header, and when `TEMP_PASS` was unset the empty header
@@ -186,6 +221,7 @@ understands:
 | `Created`      | integer | Unix seconds, informational                               |
 | `LastLogin`    | integer | Unix seconds, written on every successful sign in         |
 | `LastLinkSent` | integer | Unix seconds, used to throttle links to one per minute    |
+| `RecentLinkSents` | integer[] | Unix seconds of the links sent in the last day, for the hourly and daily caps. Unindexed |
 | `Admin`        | boolean | `true` lets them see and change every link, not just their own |
 | `Disabled`     | boolean | `true` blocks sign in without deleting the entity         |
 

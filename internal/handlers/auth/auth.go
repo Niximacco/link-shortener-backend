@@ -5,13 +5,26 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/anthonynixon/link-shortener-backend/internal/auth"
 	data "github.com/anthonynixon/link-shortener-backend/internal/cloud"
 	"github.com/anthonynixon/link-shortener-backend/internal/email"
 	"github.com/anthonynixon/link-shortener-backend/internal/magiclink"
+	"github.com/anthonynixon/link-shortener-backend/internal/ratelimit"
 	"github.com/anthonynixon/link-shortener-backend/internal/web"
 	"github.com/gin-gonic/gin"
+)
+
+// The two routes that turn an anonymous request into datastore work get a per
+// caller ceiling. This is about the cost of being probed - datastore reads and
+// instance time - rather than about email: an address that is not on the allow
+// list never gets mailed anything, and the ones that are have their own caps in
+// magiclink. Both are generous enough that a person retrying will not meet
+// them, and per instance, so they are a brake on floods rather than a promise.
+var (
+	loginLimiter    = ratelimit.New(10, time.Minute)
+	callbackLimiter = ratelimit.New(20, time.Minute)
 )
 
 func AddAuthV1(router *gin.Engine) {
@@ -20,9 +33,9 @@ func AddAuthV1(router *gin.Engine) {
 	router.GET("/", auth.RequiredPage(), Dashboard)
 
 	router.GET("/login", auth.Optional(), LoginPage)
-	router.POST("/login", auth.Optional(), RequestMagicLink)
+	router.POST("/login", loginLimiter.Middleware(web.TooManyRequests(time.Minute)), auth.Optional(), RequestMagicLink)
 	router.GET("/auth/callback", ConfirmLogin)
-	router.POST("/auth/callback", CompleteLogin)
+	router.POST("/auth/callback", callbackLimiter.Middleware(web.TooManyRequests(time.Minute)), CompleteLogin)
 	router.POST("/logout", Logout)
 
 	router.GET("/api/auth/session", auth.Required(), Session)
