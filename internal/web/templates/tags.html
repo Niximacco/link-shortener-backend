@@ -1,0 +1,232 @@
+{{define "content"}}
+{{$colors := .TagColors}}
+<main class="wide">
+  <h1>Tags</h1>
+  <p>Labels for your links. They are yours - nobody else sees them, and two people can both have a tag called the same thing.</p>
+  {{if .Error}}<div class="banner">{{.Error}}</div>{{end}}
+  <div class="banner ok" id="tag-ok" style="display:none"></div>
+  <div class="banner" id="tag-error" style="display:none"></div>
+
+  <form id="add-tag">
+    <div class="fields">
+      <div>
+        <label for="new-name">New tag</label>
+        <input id="new-name" type="text" placeholder="work" autocomplete="off" maxlength="32" required>
+      </div>
+    </div>
+    <label>Colour</label>
+    <div class="swatches" id="new-color">
+      {{range $index, $color := .Palette}}
+        <label class="swatch" style="background: {{hex $color}}">
+          <input type="radio" name="color" value="{{$color}}"{{if eq $index 0}} checked{{end}}>
+        </label>
+      {{end}}
+    </div>
+    <button type="submit" id="add-tag-submit">Add tag</button>
+  </form>
+
+  <div class="list-head">
+    <h2>Your tags <span class="muted-small" id="count">({{len .Tags}})</span></h2>
+    <a class="toggle" href="/">Back to links</a>
+  </div>
+
+  {{if .Tags}}
+    {{if ge (len .Tags) .Limit}}
+      <p class="muted-small">Showing the first {{.Limit}} tags.</p>
+    {{end}}
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Tag</th>
+            <th>Colour</th>
+            <th class="num">Links</th>
+            <th>Created</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          {{range .Tags}}
+          {{$color := tagColor $colors .Name}}
+          <tr data-name="{{.Name}}" data-color="{{.Color}}">
+            <td class="tag-cell">
+              <a class="pill view" href="/?tag={{.Name}}" style="background: {{$color}}; color: {{readable $color}}">{{.Name}}</a>
+              <input class="edit" type="text" value="{{.Name}}" maxlength="32" aria-label="Tag name">
+            </td>
+            <td class="swatch-cell">
+              <span class="view muted-small">{{.Color}}</span>
+              <span class="edit swatches">
+                {{range $.Palette}}
+                  <label class="swatch" style="background: {{hex .}}">
+                    <input type="radio" value="{{.}}">
+                  </label>
+                {{end}}
+              </span>
+            </td>
+            <td class="num">{{tagCount $.TagCounts .Name}}</td>
+            <td class="when">{{date .Created}}</td>
+            <td class="actions">
+              <button class="link" type="button" data-action="edit">Edit</button>
+              <button class="link" type="button" data-action="delete">Delete</button>
+              <button class="link save" type="button" data-action="save">Save</button>
+              <button class="link" type="button" data-action="cancel">Cancel</button>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{else}}
+    <p class="empty">You have not made a tag yet. Typing one onto a link on the dashboard makes it too.</p>
+  {{end}}
+
+  <p class="muted-small">Renaming a tag renames it on every link carrying it. Deleting one takes it off those links and leaves the links alone otherwise.</p>
+
+  <div class="row">
+    <span class="who">Signed in as {{.Email}}{{if .IsAdmin}} &middot; admin{{end}}</span>
+    <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
+  </div>
+</main>
+<script>
+  const addTag = document.getElementById("add-tag");
+  const tagOk = document.getElementById("tag-ok");
+  const tagError = document.getElementById("tag-error");
+  const addTagSubmit = document.getElementById("add-tag-submit");
+
+  function fail(message) {
+    tagOk.style.display = "none";
+    tagError.textContent = message;
+    tagError.style.display = "block";
+  }
+
+  function clearBanners() {
+    tagOk.style.display = "none";
+    tagError.style.display = "none";
+  }
+
+  function chosenColor(scope) {
+    const picked = scope.querySelector("input[type=radio]:checked");
+    return picked ? picked.value : "";
+  }
+
+  addTag.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    clearBanners();
+    addTagSubmit.disabled = true;
+
+    try {
+      const response = await send("/tags", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: document.getElementById("new-name").value.trim(),
+          color: chosenColor(document.getElementById("new-color"))
+        })
+      });
+
+      const created = await response.json();
+      if (!response.ok) {
+        fail(created.error || "Could not add that tag.");
+        return;
+      }
+
+      // Reload so the new row lands in the table with its link count.
+      window.location.reload();
+    } catch (err) {
+      if (!err || err.message !== "signed out") {
+        fail("Could not reach the server.");
+      }
+    } finally {
+      addTagSubmit.disabled = false;
+    }
+  });
+
+  async function save(row) {
+    const name = row.dataset.name;
+    const payload = {
+      name: row.querySelector(".tag-cell .edit").value.trim(),
+      color: chosenColor(row.querySelector(".swatch-cell .swatches"))
+    };
+
+    if (!payload.name) {
+      fail("A tag needs a name.");
+      return;
+    }
+
+    const response = await send("/tags/" + encodeURIComponent(name), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const body = await response.json();
+    if (!response.ok) {
+      fail(body.error || "Could not save that change.");
+      return;
+    }
+
+    // A rename rewrites the tag across the links carrying it, so the counts and
+    // the dashboard both want re-reading rather than patching up in place.
+    window.location.reload();
+  }
+
+  async function remove(row) {
+    const name = row.dataset.name;
+    if (!window.confirm("Delete " + name + "? It comes off every link carrying it. The links themselves stay.")) {
+      return;
+    }
+
+    const response = await send("/tags/" + encodeURIComponent(name), { method: "DELETE" });
+    if (!response.ok) {
+      const body = await response.json().catch(function () { return {}; });
+      fail(body.error || "Could not delete that tag.");
+      return;
+    }
+
+    window.location.reload();
+  }
+
+  document.addEventListener("click", async function (event) {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+
+    const row = button.closest("tr");
+    const action = button.dataset.action;
+
+    try {
+      if (action === "edit") {
+        row.classList.add("editing");
+        // Start the colour picker on whatever the tag already is.
+        const current = row.dataset.color.toLowerCase();
+        const options = row.querySelectorAll(".swatch-cell input[type=radio]");
+        let matched = false;
+        for (const option of options) {
+          option.name = "color-" + row.dataset.name;
+          if (option.value.toLowerCase() === current) {
+            option.checked = true;
+            matched = true;
+          }
+        }
+        if (!matched && options.length) {
+          options[0].checked = true;
+        }
+        row.querySelector(".tag-cell .edit").focus();
+      } else if (action === "cancel") {
+        row.querySelector(".tag-cell .edit").value = row.dataset.name;
+        row.classList.remove("editing");
+        clearBanners();
+      } else if (action === "save") {
+        await save(row);
+      } else if (action === "delete") {
+        await remove(row);
+      }
+    } catch (err) {
+      if (!err || err.message !== "signed out") {
+        fail("Could not reach the server.");
+      }
+    }
+  });
+</script>
+{{end}}

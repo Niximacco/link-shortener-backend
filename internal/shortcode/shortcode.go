@@ -41,6 +41,8 @@ var reserved = map[string]bool{
 	"links":  true,
 	"user":   true,
 	"users":  true,
+	"tag":    true,
+	"tags":   true,
 	"login":  true,
 	"logout": true,
 	"auth":   true,

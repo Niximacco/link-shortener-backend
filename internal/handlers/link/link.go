@@ -10,6 +10,7 @@ import (
 	"github.com/anthonynixon/link-shortener-backend/internal/auth"
 	data "github.com/anthonynixon/link-shortener-backend/internal/cloud"
 	"github.com/anthonynixon/link-shortener-backend/internal/shortcode"
+	"github.com/anthonynixon/link-shortener-backend/internal/tags"
 	"github.com/anthonynixon/link-shortener-backend/internal/types"
 	"github.com/gin-gonic/gin"
 )
@@ -23,11 +24,15 @@ func AddLinkV1(router *gin.Engine) {
 	router.DELETE("/link/:short", auth.Required(), DeleteLink)
 }
 
-// linkUpdate is the body of a PATCH. Both fields are optional; whichever is
+// linkUpdate is the body of a PATCH. Every field is optional; whichever is
 // present gets changed.
+//
+// Tags is a pointer so that sending "tags": "" means "take every tag off this
+// link" while leaving the field out means "don't touch the tags".
 type linkUpdate struct {
-	Long  string `json:"long"`
-	Short string `json:"short"`
+	Long  string  `json:"long"`
+	Short string  `json:"short"`
+	Tags  *string `json:"tags"`
 }
 
 func getLinkDetails(short string) (link types.Link, err error) {
@@ -84,7 +89,13 @@ func ListLinks(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"links": links, "admin": admin})
+	// Filtering is applied after the list comes back, for the same reason it is
+	// sorted there: a datastore filter on tags next to the CreatedBy filter
+	// would need a composite index.
+	tag := strings.TrimSpace(c.Query("tag"))
+	links = data.FilterByTag(links, tag)
+
+	c.JSON(http.StatusOK, gin.H{"links": links, "admin": admin, "tag": tag})
 }
 
 func GetLongLink(c *gin.Context) {
@@ -139,6 +150,13 @@ func CreateShortLink(c *gin.Context) {
 		return
 	}
 
+	cleanTags, err := tags.Clean(newLink.Tags)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	newLink.Tags = cleanTags
+
 	newLink.Created = time.Now().Unix()
 
 	err = data.NewLink(newLink)
@@ -151,8 +169,27 @@ func CreateShortLink(c *gin.Context) {
 		return
 	}
 
+	// The tags the link was labelled with are made real afterwards, so a tag can
+	// be typed straight onto a link without visiting the tags page first. It
+	// runs after the link is stored because a tag that failed to be created is
+	// worth a log line, not a lost link - the label is on the link either way,
+	// and the tags page will show it once the entity catches up.
+	ensureTags(newLink.CreatedBy, newLink.Tags)
+
 	newLink.Short = strings.ToUpper(newLink.Short)
 	c.JSON(http.StatusCreated, newLink)
+}
+
+// ensureTags creates whichever of a link's tags its owner doesn't have yet.
+// Failing to is not worth failing the request over, so it is logged instead.
+func ensureTags(owner string, list string) {
+	if owner == "" || list == "" {
+		return
+	}
+
+	if err := data.EnsureTags(owner, tags.Parse(list)); err != nil {
+		log.Printf("could not create tags for %s: %s", owner, err.Error())
+	}
 }
 
 func UpdateLink(c *gin.Context) {
@@ -167,7 +204,7 @@ func UpdateLink(c *gin.Context) {
 	update.Long = strings.TrimSpace(update.Long)
 	update.Short = strings.TrimSpace(update.Short)
 
-	if update.Long == "" && update.Short == "" {
+	if update.Long == "" && update.Short == "" && update.Tags == nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "nothing to change"})
 		return
 	}
@@ -177,10 +214,25 @@ func UpdateLink(c *gin.Context) {
 		return
 	}
 
-	link, err := data.UpdateLink(c.Param("short"), update.Short, update.Long, owner)
+	if update.Tags != nil {
+		cleanTags, err := tags.Clean(*update.Tags)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		update.Tags = &cleanTags
+	}
+
+	link, err := data.UpdateLink(c.Param("short"), update.Short, update.Long, update.Tags, owner)
 	if err != nil {
 		respond(c, err, admin)
 		return
+	}
+
+	// New tags belong to whoever owns the link, not to the admin who may have
+	// been the one to type them.
+	if update.Tags != nil {
+		ensureTags(link.CreatedBy, link.Tags)
 	}
 
 	c.JSON(http.StatusOK, link)

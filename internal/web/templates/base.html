@@ -149,6 +149,63 @@
     vertical-align: middle;
   }
   .tag.off { background: var(--error-bg); color: var(--error-text); border-color: transparent; }
+  /* A tag pill. The colour is set inline from the tag's own colour, so only the
+     shape lives here. */
+  .pill {
+    display: inline-block;
+    margin: 2px 4px 2px 0;
+    padding: 2px 9px;
+    border-radius: 20px;
+    border: 1px solid transparent;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    text-decoration: none;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .pill:hover { opacity: 0.85; }
+  .filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    margin-top: 12px;
+  }
+  /* An unselected filter is an outline so the selected one reads as the one
+     that is doing something. */
+  .pill.filter {
+    background: var(--card);
+    color: var(--muted);
+    font-weight: 500;
+    border-color: var(--line);
+  }
+  .pill.filter .dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    vertical-align: baseline;
+  }
+  .pill.filter.on { color: var(--accent-text); background: var(--accent); border-color: transparent; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .swatch {
+    width: 26px;
+    height: 26px;
+    margin: 0;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    box-shadow: 0 0 0 1px var(--line);
+    cursor: pointer;
+  }
+  .swatch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  /* The chosen swatch gets a ring in the page's own text colour, which reads on
+     every colour in the palette and in both themes. */
+  .swatch:has(input:checked) { border-color: var(--card); box-shadow: 0 0 0 2px var(--text); }
+  td.tags { max-width: 220px; }
+  td.tags .view { display: block; }
+  td.swatch-cell .swatches { margin: 0; }
   td.who-cell { overflow-wrap: anywhere; }
   code { font-size: 12px; }
   .fields { display: flex; gap: 14px; }
@@ -203,6 +260,8 @@
   tr .edit, tr [data-action="save"], tr [data-action="cancel"] { display: none; }
   tr.editing .view, tr.editing [data-action="edit"], tr.editing [data-action="delete"] { display: none; }
   tr.editing .edit { display: inline-block; }
+  /* The colour picker is an editor too, but it stays a flex row of swatches. */
+  tr.editing .edit.swatches { display: flex; }
   tr.editing [data-action="save"], tr.editing [data-action="cancel"] { display: inline; }
   tr.editing [data-action="save"] { color: var(--text); font-weight: 600; }
   @media (max-width: 620px) {

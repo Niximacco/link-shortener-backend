@@ -58,6 +58,7 @@ func Dashboard(c *gin.Context) {
 	page.IsAdmin = admin
 	page.ShowingAll = showingAll
 	page.Limit = data.LINK_LIST_LIMIT
+	page.Tag = strings.TrimSpace(c.Query("tag"))
 
 	links, err := data.ListLinks(owner, data.LINK_LIST_LIMIT)
 	if err != nil {
@@ -66,7 +67,21 @@ func Dashboard(c *gin.Context) {
 		page.Error = "Your links couldn't be loaded. Creating one still works."
 	}
 
-	page.Links = links
+	// Filtering happens here rather than in the query: a datastore filter on
+	// tags alongside the CreatedBy one would need a composite index, and the
+	// page is already bounded by LINK_LIST_LIMIT.
+	page.Links = data.FilterByTag(links, page.Tag)
+
+	// The tag list is always the caller's own, even for an admin looking at
+	// everybody's links: tags are a private filing system, and the filter is
+	// there to sort through your own labels. A link carrying somebody else's
+	// tag still shows it, in the default colour.
+	page.Tags, err = data.ListTags(address, data.TAG_LIST_LIMIT)
+	if err != nil {
+		// Losing the tag list costs the filters and the pill colours, which is
+		// not worth losing the links over.
+		log.Printf("could not list tags: %s", err.Error())
+	}
 
 	web.Render(c, http.StatusOK, web.DashboardPage, page)
 }
