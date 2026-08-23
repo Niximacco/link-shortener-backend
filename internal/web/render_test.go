@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/anthonynixon/link-shortener-backend/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -99,5 +100,110 @@ func TestUserSuppliedValuesAreEscaped(t *testing.T) {
 
 	if strings.Contains(body, "<script>alert(1)</script>") || strings.Contains(body, "<script>alert(2)</script>") {
 		t.Errorf("login page did not escape user input:\n%s", body)
+	}
+}
+
+func dashboardWithLinks() Page {
+	page := samplePage("Short links")
+	page.Error = ""
+	page.Limit = 500
+	page.Links = []types.Link{
+		{Short: "ABC123", Long: "https://example.com/one", Clicks: 7, Created: 1755900000, CreatedBy: "owner@example.com"},
+		{Short: "OLD", Long: "https://example.com/two", Clicks: 0, Created: 0, CreatedBy: ""},
+	}
+
+	return page
+}
+
+func TestDashboardListsLinks(t *testing.T) {
+	body := render(t, DashboardPage, dashboardWithLinks())
+
+	for _, want := range []string{"ABC123", "https://example.com/one", ">7<", "Aug 22, 2025"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard did not render %q", want)
+		}
+	}
+
+	// A link created before the Created field existed carries a zero.
+	if !strings.Contains(body, ">-<") {
+		t.Error("dashboard rendered a zero timestamp as a date instead of a dash")
+	}
+
+	if strings.Contains(body, "You have not created a link yet") {
+		t.Error("dashboard showed the empty state despite having links")
+	}
+}
+
+func TestDashboardHidesAdminControlsFromNonAdmins(t *testing.T) {
+	page := dashboardWithLinks()
+	page.IsAdmin = false
+	page.ShowingAll = false
+
+	body := render(t, DashboardPage, page)
+
+	if strings.Contains(body, "?all=1") {
+		t.Error("dashboard offered the show-everyone toggle to a non-admin")
+	}
+
+	if strings.Contains(body, "owner@example.com") {
+		t.Error("dashboard showed an owner column to a non-admin")
+	}
+
+	if strings.Contains(body, "admin") {
+		t.Error("dashboard labelled a non-admin as admin")
+	}
+}
+
+func TestDashboardShowsAdminControlsToAdmins(t *testing.T) {
+	page := dashboardWithLinks()
+	page.IsAdmin = true
+
+	body := render(t, DashboardPage, page)
+	if !strings.Contains(body, "?all=1") {
+		t.Error("admin was not offered the show-everyone toggle")
+	}
+
+	page.ShowingAll = true
+	body = render(t, DashboardPage, page)
+
+	if !strings.Contains(body, "owner@example.com") {
+		t.Error("owner column missing while showing everyone")
+	}
+
+	if !strings.Contains(body, "All links") {
+		t.Error("heading did not switch to the everyone view")
+	}
+}
+
+func TestDashboardEmptyState(t *testing.T) {
+	page := samplePage("Short links")
+	page.Error = ""
+	page.Limit = 500
+
+	body := render(t, DashboardPage, page)
+	if !strings.Contains(body, "You have not created a link yet") {
+		t.Error("dashboard did not render the empty state")
+	}
+
+	if strings.Contains(body, "Showing the first") {
+		t.Error("dashboard claimed truncation with no links")
+	}
+}
+
+func TestDashboardEscapesLinkValues(t *testing.T) {
+	page := dashboardWithLinks()
+	page.Links = []types.Link{{
+		Short: `X"><script>alert(1)</script>`,
+		Long:  `javascript:alert(2)`,
+	}}
+
+	body := render(t, DashboardPage, page)
+
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Error("a short code escaped into markup")
+	}
+
+	if strings.Contains(body, `href="javascript:alert(2)"`) {
+		t.Error("a javascript: destination was rendered as a live href")
 	}
 }

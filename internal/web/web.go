@@ -6,8 +6,10 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/anthonynixon/link-shortener-backend/internal/config"
+	"github.com/anthonynixon/link-shortener-backend/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -27,9 +29,23 @@ const (
 
 var pages = map[string]*template.Template{}
 
+// funcs are the helpers the templates can call.
+var funcs = template.FuncMap{
+	// date renders a unix timestamp. Links created before the field existed
+	// carry a zero, which is worth showing as unknown rather than as 1970.
+	"date": func(seconds int64) string {
+		if seconds <= 0 {
+			return "-"
+		}
+
+		return time.Unix(seconds, 0).UTC().Format("Jan 2, 2006")
+	},
+}
+
 func init() {
 	for _, page := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage} {
-		pages[page] = template.Must(template.ParseFS(templateFS, "templates/base.html", "templates/"+page))
+		tmpl := template.New(page).Funcs(funcs)
+		pages[page] = template.Must(tmpl.ParseFS(templateFS, "templates/base.html", "templates/"+page))
 	}
 }
 
@@ -45,6 +61,12 @@ type Page struct {
 	Error          string
 	Message        string
 	ExpiresMinutes int
+
+	// Dashboard state.
+	Links      []types.Link
+	IsAdmin    bool
+	ShowingAll bool
+	Limit      int
 }
 
 // New starts a Page with the site-wide values already filled in.
