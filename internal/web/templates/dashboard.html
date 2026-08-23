@@ -78,6 +78,14 @@
     <p class="empty">{{if .ShowingAll}}Nobody has created a link yet.{{else}}You have not created a link yet.{{end}}</p>
   {{end}}
 
+  {{if .IsAdmin}}
+  <div class="list-head">
+    <h2>Access</h2>
+    <a class="toggle" href="/users">Manage users</a>
+  </div>
+  <p class="muted-small">Add people who can sign in, and see who already can.</p>
+  {{end}}
+
   <div class="row">
     <span class="who">Signed in as {{.Email}}{{if .IsAdmin}} &middot; admin{{end}}</span>
     <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
@@ -103,15 +111,6 @@
     errorBox.style.display = "none";
   }
 
-  // A 401 means the session went away while the page was open.
-  async function send(url, options) {
-    const response = await fetch(url, options);
-    if (response.status === 401) {
-      window.location = "/login";
-      throw new Error("signed out");
-    }
-    return response;
-  }
 
   function rowsBody() {
     return document.getElementById("rows");
@@ -328,6 +327,7 @@
       submit.disabled = false;
     }
   });
+
 
   document.getElementById("copy").addEventListener("click", function () {
     navigator.clipboard.writeText(resultLink.textContent);

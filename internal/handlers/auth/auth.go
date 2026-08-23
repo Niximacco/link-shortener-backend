@@ -30,7 +30,7 @@ func AddAuthV1(router *gin.Engine) {
 
 func Dashboard(c *gin.Context) {
 	address := auth.Email(c)
-	admin := data.IsAdmin(address)
+	admin := auth.IsAdmin(c)
 
 	// Showing everybody's links is an admin-only view, and only on request.
 	showingAll := admin && c.Query("all") != ""

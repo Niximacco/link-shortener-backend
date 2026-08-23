@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	data "github.com/anthonynixon/link-shortener-backend/internal/cloud"
+	"github.com/anthonynixon/link-shortener-backend/internal/types"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -40,6 +42,8 @@ const (
 
 	// contextEmailKey holds the authenticated email address on the gin context.
 	contextEmailKey = "auth_email"
+	// contextUserKey holds the loaded user entity on the gin context.
+	contextUserKey = "auth_user"
 )
 
 func init() {
@@ -223,14 +227,45 @@ func resolve(c *gin.Context) (email string, err error) {
 	return "", errorNoCredentials
 }
 
-// Optional attaches the signed-in email to the context when there is one, and
+// authenticate resolves the session and confirms the account behind it is still
+// allowed in. Access revoked in datastore therefore takes effect on the next
+// request, rather than whenever a 30 day cookie happens to expire.
+//
+// The user is put on the context so the rest of the request can ask about
+// admin rights without paying for a second lookup.
+func authenticate(c *gin.Context) (email string, err error) {
+	email, err = resolve(c)
+	if err != nil {
+		return "", err
+	}
+
+	user, err := data.GetUser(email)
+	switch {
+	case err == nil:
+
+	case errors.Is(err, data.UserNotFoundErr), errors.Is(err, data.UserDisabledErr):
+		// The account was removed or disabled while this session was alive.
+		ClearSessionCookie(c)
+		return "", err
+
+	default:
+		// Datastore having a bad moment must not sign everybody out. Only an
+		// explicit revocation closes the door; anything else fails open.
+		log.Printf("could not confirm the account behind a session: %s", err.Error())
+		user = types.User{Email: email}
+	}
+
+	c.Set(contextEmailKey, email)
+	c.Set(contextUserKey, user)
+
+	return email, nil
+}
+
+// Optional attaches the signed-in user to the context when there is one, and
 // lets the request through either way.
 func Optional() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if email, err := resolve(c); err == nil {
-			c.Set(contextEmailKey, email)
-		}
-
+		_, _ = authenticate(c)
 		c.Next()
 	}
 }
@@ -238,13 +273,11 @@ func Optional() gin.HandlerFunc {
 // Required rejects unauthenticated requests with a JSON 401. Use it on the API.
 func Required() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		email, err := resolve(c)
-		if err != nil {
+		if _, err := authenticate(c); err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 			return
 		}
 
-		c.Set(contextEmailKey, email)
 		c.Next()
 	}
 }
@@ -253,14 +286,12 @@ func Required() gin.HandlerFunc {
 // where they were headed. Use it on html routes.
 func RequiredPage() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		email, err := resolve(c)
-		if err != nil {
+		if _, err := authenticate(c); err != nil {
 			c.Redirect(http.StatusFound, "/login?next="+url.QueryEscape(c.Request.URL.RequestURI()))
 			c.Abort()
 			return
 		}
 
-		c.Set(contextEmailKey, email)
 		c.Next()
 	}
 }
@@ -278,6 +309,27 @@ func Email(c *gin.Context) string {
 	}
 
 	return ""
+}
+
+// User returns the account behind the request, or a zero user when the request
+// is anonymous.
+func User(c *gin.Context) types.User {
+	user, ok := c.Get(contextUserKey)
+	if !ok {
+		return types.User{}
+	}
+
+	if asUser, ok := user.(types.User); ok {
+		return asUser
+	}
+
+	return types.User{}
+}
+
+// IsAdmin reports whether the request came from an admin. It reads the user
+// that authenticate already loaded, so asking is free.
+func IsAdmin(c *gin.Context) bool {
+	return User(c).Admin
 }
 
 // IsSignedIn reports whether the request carried a valid session.

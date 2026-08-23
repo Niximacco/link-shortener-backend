@@ -41,19 +41,24 @@ The API also still accepts `Authorization: bearer <token>` for scripts.
 | `POST /link`              | session   | Creates a short link                                |
 | `PATCH /link/:short`      | session   | Changes the destination, the short code, or both    |
 | `DELETE /link/:short`     | session   | Deletes a link                                      |
+| `GET /users`              | admin     | Access page: who can sign in, and add someone       |
+| `POST /users`             | admin     | Adds an address to the allow list                   |
+| `PATCH /users/:email`     | admin     | Changes somebody's role, or blocks them signing in |
 
 Static routes win over `/:short`, and short codes are upper-cased before lookup, so `/login` is the
 login page while `/LOGIN` is still a perfectly good short code. Short codes that would collide with
-a route the service serves itself - `link`, `links`, `login`, `logout`, `auth`, `api`, `static` -
-are rejected at creation, along with anything outside `A-Z a-z 0-9 - _`.
+a route the service serves itself - `link`, `links`, `user`, `users`, `login`, `logout`, `auth`,
+`api`, `static` - are rejected at creation, along with anything outside `A-Z a-z 0-9 - _`.
 
 ## Who can change what
 
 Every link records the address that created it in `CreatedBy`. That is the ownership record.
 
 - A normal user sees only their own links, and can only edit or delete their own.
-- An **admin** sees their own by default and everybody's on request, and can edit or delete
-  anything. Make somebody an admin by setting `Admin` to true on their `user` entity.
+- An **admin** sees their own by default and everybody's on request, can edit or delete anything,
+  and runs the Access page: adding users, changing roles, and blocking people. Make somebody an
+  admin by ticking the box when adding them, from their row on the Access page, or by setting
+  `Admin` to true on their `user` entity.
 
 Asking to change a link that exists but belongs to somebody else returns **404, not 403**, for a
 normal user - confirming that a code exists but is not yours is more than the answer needs to give
@@ -124,6 +129,52 @@ memory - so **no composite indexes are needed**. Past a few thousand links, swap
 `CreatedBy` + `Created` composite index and let datastore do the ordering.
 
 ### Allowing someone to sign in
+
+Signed in as an admin, go to **`/users`** - the Access page, linked from the dashboard. It lists
+everyone who can sign in, with their role, when they were added and when they last signed in, and
+it has the form for adding somebody. Tick the box to make them an admin too. Nothing is emailed -
+tell them to visit `/login` and request a link themselves.
+
+Both routes are admin-only. The check is a middleware that reads the caller's admin flag from
+datastore on every request rather than trusting the session token, so revoking somebody's admin
+takes effect immediately instead of waiting out a 30 day cookie. Hiding the controls from
+non-admins is only cosmetic; the middleware is what enforces it. A non-admin who follows a link to
+`/users` gets a 403 page rather than a json error.
+
+```bash
+curl -X POST https://ajn.me/users -H 'Content-Type: application/json' \
+  -d '{"email":"someone@example.com","admin":false}' -b 'ls_session=...'
+```
+
+Re-adding an existing address returns 409 rather than overwriting, so it can never quietly reset
+somebody's admin flag or their login history.
+
+The page also carries the controls for changing a role or blocking somebody, described below.
+
+### Changing somebody's role or blocking them
+
+Each row on the Access page has **Make admin / Remove admin** and **Disable / Enable**. Both go
+through `PATCH /users/:email`, which takes `{"admin": true}`, `{"disabled": true}`, or both. A field
+left out is left alone, so flipping one never disturbs the other.
+
+**An admin cannot change their own role or disable themselves.** Their own row shows no controls and
+the endpoint refuses it with a 403. That one rule is also what stops the service from ever being
+left without a working admin: only an admin can demote anybody, and nobody can demote themselves, so
+whoever is last standing cannot be removed by anyone. To step down, have another admin do it.
+
+Disabling is the way to revoke access. It blocks sign in **and ends any session the person already
+has** - every authenticated request re-reads the account, so the change takes effect on their next
+click rather than whenever their 30 day cookie expires. Their links and history stay untouched, and
+enabling them again restores everything. Deleting a user outright is still a console job.
+
+The same re-read means an account deleted in the console also loses its live sessions immediately.
+It costs one datastore key lookup per authenticated request; the public redirect path is untouched.
+If datastore is unreachable the request is allowed through on the strength of its signed token -
+only an explicit "no such user" or "disabled" closes the door.
+
+### Creating a user by hand
+
+The first admin has to be made this way, since adding users requires already being one.
 
 In the console, under the right namespace, create an entity of kind `user` with the **key name set
 to the lower-cased email address** (`someone@example.com`). Optional properties the service

@@ -1,0 +1,186 @@
+{{define "content"}}
+<main class="wide">
+  <h1>Access</h1>
+  <p>Everyone who can sign in. Having an entry here is what grants access - there is no password to issue or revoke.</p>
+  {{if .Error}}<div class="banner">{{.Error}}</div>{{end}}
+  <div class="banner ok" id="user-ok" style="display:none"></div>
+  <div class="banner" id="user-error" style="display:none"></div>
+
+  <form id="add-user">
+    <div class="fields">
+      <div>
+        <label for="new-email">Add someone</label>
+        <input id="new-email" type="email" placeholder="someone@example.com" autocomplete="off" required>
+      </div>
+    </div>
+    <label class="check"><input id="new-admin" type="checkbox"> Make them an admin, able to see and change everyone&#39;s links and add users</label>
+    <button type="submit" id="add-user-submit">Add user</button>
+  </form>
+
+  <div class="list-head">
+    <h2>Allowed users <span class="muted-small" id="count">({{len .Users}})</span></h2>
+    <a class="toggle" href="/">Back to links</a>
+  </div>
+
+  {{if .Users}}
+    {{if ge (len .Users) .Limit}}
+      <p class="muted-small">Showing the first {{.Limit}} users.</p>
+    {{end}}
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Added</th>
+            <th>Last sign in</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="rows">
+          {{range .Users}}
+          <tr data-email="{{.Email}}" data-admin="{{.Admin}}" data-disabled="{{.Disabled}}">
+            <td class="who-cell">
+              {{.Email}}
+              {{if eq .Email $.Email}}<span class="tag">you</span>{{end}}
+              {{if .Disabled}}<span class="tag off">disabled</span>{{end}}
+            </td>
+            <td class="when">{{if .Admin}}Admin{{else}}User{{end}}</td>
+            <td class="when">{{date .Created}}</td>
+            <td class="when">{{date .LastLogin}}</td>
+            <td class="actions">
+              {{if eq .Email $.Email}}
+                <span class="muted-small">that&#39;s you</span>
+              {{else}}
+                <button class="link" type="button" data-action="toggle-admin">{{if .Admin}}Remove admin{{else}}Make admin{{end}}</button>
+                <button class="link" type="button" data-action="toggle-disabled">{{if .Disabled}}Enable{{else}}Disable{{end}}</button>
+              {{end}}
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+  {{else}}
+    <p class="empty">Nobody can sign in yet.</p>
+  {{end}}
+
+  <p class="muted-small">Disabling blocks sign in and ends any session they already have, without losing their history. Deleting a user outright still means removing their <code>user</code> entity in the datastore console.</p>
+
+  <div class="row">
+    <span class="who">Signed in as {{.Email}}{{if .IsAdmin}} &middot; admin{{end}}</span>
+    <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
+  </div>
+</main>
+<script>
+  const addUser = document.getElementById("add-user");
+  const userOk = document.getElementById("user-ok");
+  const userError = document.getElementById("user-error");
+  const addUserSubmit = document.getElementById("add-user-submit");
+
+  addUser.addEventListener("submit", async function (event) {
+    event.preventDefault();
+    userOk.style.display = "none";
+    userError.style.display = "none";
+    addUserSubmit.disabled = true;
+
+    const emailField = document.getElementById("new-email");
+    const adminField = document.getElementById("new-admin");
+
+    try {
+      const response = await send("/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: emailField.value.trim(), admin: adminField.checked })
+      });
+
+      const created = await response.json();
+      if (!response.ok) {
+        userError.textContent = created.error || "Could not add that user.";
+        userError.style.display = "block";
+        return;
+      }
+
+      userOk.textContent = created.email + (created.admin ? " can now sign in, as an admin." : " can now sign in.");
+      userOk.style.display = "block";
+      addUser.reset();
+
+      // Reload so the new row appears in the table with everything else.
+      window.setTimeout(function () { window.location.reload(); }, 900);
+    } catch (err) {
+      if (!err || err.message !== "signed out") {
+        userError.textContent = "Could not reach the server.";
+        userError.style.display = "block";
+      }
+    } finally {
+      addUserSubmit.disabled = false;
+    }
+  });
+
+  function fail(message) {
+    userOk.style.display = "none";
+    userError.textContent = message;
+    userError.style.display = "block";
+  }
+
+  // Role and access changes are rare and they change what somebody can do, so
+  // each one is confirmed and the page is reloaded afterwards rather than
+  // patched up in place.
+  async function updateUser(row, action) {
+    const email = row.dataset.email;
+    const isAdmin = row.dataset.admin === "true";
+    const isDisabled = row.dataset.disabled === "true";
+
+    let payload;
+    let question;
+
+    if (action === "toggle-admin") {
+      payload = { admin: !isAdmin };
+      question = isAdmin
+        ? "Remove admin from " + email + "? They keep their own links but lose access to everyone else's."
+        : "Make " + email + " an admin? They will be able to see and change everyone's links, and add users.";
+    } else {
+      payload = { disabled: !isDisabled };
+      question = isDisabled
+        ? "Let " + email + " sign in again?"
+        : "Disable " + email + "? They will be signed out and cannot sign back in.";
+    }
+
+    if (!window.confirm(question)) {
+      return;
+    }
+
+    const response = await send("/users/" + encodeURIComponent(email), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const updated = await response.json();
+    if (!response.ok) {
+      fail(updated.error || "Could not update that user.");
+      return;
+    }
+
+    window.location.reload();
+  }
+
+  document.addEventListener("click", async function (event) {
+    const button = event.target.closest("button[data-action]");
+    if (!button) {
+      return;
+    }
+
+    button.disabled = true;
+    try {
+      await updateUser(button.closest("tr"), button.dataset.action);
+    } catch (err) {
+      if (!err || err.message !== "signed out") {
+        fail("Could not reach the server.");
+      }
+    } finally {
+      button.disabled = false;
+    }
+  });
+</script>
+{{end}}

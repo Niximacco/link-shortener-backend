@@ -292,17 +292,6 @@ func tolerateFieldMismatch(err error) error {
 	return err
 }
 
-// IsAdmin reports whether an email belongs to an admin. Anything that goes
-// wrong reading the user answers no: a failed lookup must never widen access.
-func IsAdmin(email string) bool {
-	user, err := GetUser(email)
-	if err != nil {
-		return false
-	}
-
-	return user.Admin
-}
-
 // NormalizeEmail is how an email address is keyed everywhere: trimmed and
 // lower-cased. Anything that looks up or stores a user goes through it.
 func NormalizeEmail(email string) string {
@@ -347,29 +336,34 @@ func isFieldMismatch(err error) bool {
 	return errors.As(err, &mismatch)
 }
 
-// setUserProperty updates a single property on a user entity in place. It reads
-// into a PropertyList rather than types.User so that any other properties on
-// the entity - notes, a display name, whatever got added by hand - survive the
+// setUserProperties updates properties on a user entity in place. It reads into
+// a PropertyList rather than types.User so that any other properties on the
+// entity - notes, a display name, whatever got added by hand - survive the
 // write untouched.
-func setUserProperty(email string, name string, value int64) error {
+func setUserProperties(email string, values map[string]interface{}) error {
 	key := userKey(email)
 	_, err := datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
 		var properties datastore.PropertyList
 		if err := tx.Get(key, &properties); err != nil {
+			if errors.Is(err, datastore.ErrNoSuchEntity) {
+				return UserNotFoundErr
+			}
 			return err
 		}
 
-		updated := false
-		for i := range properties {
-			if properties[i].Name == name {
-				properties[i].Value = value
-				updated = true
-				break
+		for name, value := range values {
+			updated := false
+			for i := range properties {
+				if properties[i].Name == name {
+					properties[i].Value = value
+					updated = true
+					break
+				}
 			}
-		}
 
-		if !updated {
-			properties = append(properties, datastore.Property{Name: name, Value: value})
+			if !updated {
+				properties = append(properties, datastore.Property{Name: name, Value: value})
+			}
 		}
 
 		_, err := tx.Put(key, &properties)
@@ -379,15 +373,119 @@ func setUserProperty(email string, name string, value int64) error {
 	return err
 }
 
+// UpdateUser changes a user's role or whether they're blocked. A nil pointer
+// means "leave this alone", so a caller can flip one without touching the other.
+func UpdateUser(email string, admin *bool, disabled *bool) (user types.User, err error) {
+	email = NormalizeEmail(email)
+
+	values := map[string]interface{}{}
+	if admin != nil {
+		values["Admin"] = *admin
+	}
+	if disabled != nil {
+		values["Disabled"] = *disabled
+	}
+
+	if len(values) == 0 {
+		return types.User{}, nil
+	}
+
+	if err = setUserProperties(email, values); err != nil {
+		return types.User{}, err
+	}
+
+	// Read it back so the caller gets what is actually stored. GetUser refuses
+	// to return a disabled user, so build that case from what we just wrote.
+	user, err = GetUser(email)
+	if errors.Is(err, UserDisabledErr) {
+		user.Email = email
+		user.Disabled = true
+		return user, nil
+	}
+
+	return user, err
+}
+
+// USER_LIST_LIMIT caps the access page. Same reasoning as LINK_LIST_LIMIT: the
+// query carries no sort order, so no composite index is needed.
+const USER_LIST_LIMIT = 500
+
+// ListUsers returns everyone who is allowed to sign in, by address.
+//
+// The Email property is filled in from the key for any entity that doesn't
+// carry one - a user created by hand in the console only needs a key name, so
+// the property is often missing, and the key is the address of record either
+// way.
+func ListUsers(limit int) (users []types.User, err error) {
+	query := datastore.NewQuery(userKind).Namespace(namespace)
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+
+	keys, err := datastoreClient.GetAll(ctx, query, &users)
+	if err = tolerateFieldMismatch(err); err != nil {
+		return nil, err
+	}
+
+	if users == nil {
+		users = []types.User{}
+	}
+
+	for i := range users {
+		if users[i].Email == "" && i < len(keys) {
+			users[i].Email = keys[i].Name
+		}
+	}
+
+	sort.Slice(users, func(i, j int) bool {
+		return users[i].Email < users[j].Email
+	})
+
+	return users, nil
+}
+
+// NewUser adds an address to the allow list. It fails with AlreadyExistsErr
+// rather than overwriting, so re-adding somebody can never quietly reset their
+// admin flag or their login history.
+func NewUser(email string, admin bool) (user types.User, err error) {
+	email = NormalizeEmail(email)
+	key := userKey(email)
+
+	user = types.User{
+		Email:   email,
+		Created: time.Now().Unix(),
+		Admin:   admin,
+	}
+
+	_, err = datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
+		var existing types.User
+		if err := tx.Get(key, &existing); err != datastore.ErrNoSuchEntity {
+			if err == nil || isFieldMismatch(err) {
+				return AlreadyExistsErr
+			}
+			return err
+		}
+
+		_, err := tx.Put(key, &user)
+		return err
+	})
+
+	if err != nil {
+		return types.User{}, err
+	}
+
+	return user, nil
+}
+
 // MarkLinkSent records the time a magic link was mailed to a user, so repeated
 // requests can be throttled.
 func MarkLinkSent(email string, at time.Time) error {
-	return setUserProperty(email, "LastLinkSent", at.Unix())
+	return setUserProperties(email, map[string]interface{}{"LastLinkSent": at.Unix()})
 }
 
 // MarkLoggedIn records a successful login on the user entity.
 func MarkLoggedIn(email string, at time.Time) error {
-	return setUserProperty(email, "LastLogin", at.Unix())
+	return setUserProperties(email, map[string]interface{}{"LastLogin": at.Unix()})
 }
 
 // NewMagicLink stores a pending login token. tokenHash is the SHA-256 of the

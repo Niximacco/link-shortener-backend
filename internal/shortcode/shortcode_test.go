@@ -25,6 +25,8 @@ func TestValidRejectsUnusableCodes(t *testing.T) {
 		"api":    "reserved",
 		"link":   "reserved",
 		"links":  "reserved",
+		"user":   "reserved",
+		"users":  "reserved",
 		"logout": "reserved",
 		"auth":   "reserved",
 	}

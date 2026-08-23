@@ -25,6 +25,7 @@ const (
 	ConfirmPage   = "confirm.html"
 	DashboardPage = "dashboard.html"
 	MessagePage   = "message.html"
+	UsersPage     = "users.html"
 )
 
 var pages = map[string]*template.Template{}
@@ -43,7 +44,7 @@ var funcs = template.FuncMap{
 }
 
 func init() {
-	for _, page := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage} {
+	for _, page := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage, UsersPage} {
 		tmpl := template.New(page).Funcs(funcs)
 		pages[page] = template.Must(tmpl.ParseFS(templateFS, "templates/base.html", "templates/"+page))
 	}
@@ -64,6 +65,7 @@ type Page struct {
 
 	// Dashboard state.
 	Links      []types.Link
+	Users      []types.User
 	IsAdmin    bool
 	ShowingAll bool
 	Limit      int
