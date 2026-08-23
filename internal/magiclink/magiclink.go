@@ -23,6 +23,22 @@ const (
 	TOKEN_VALID_TIME = 15 * time.Minute
 	// SEND_THROTTLE is the minimum gap between two links for the same address.
 	SEND_THROTTLE = 60 * time.Second
+
+	// SEND_LIMIT_HOUR and SEND_LIMIT_DAY cap how many links one address can have
+	// mailed to it inside SEND_WINDOW_HOUR and SEND_WINDOW_DAY.
+	//
+	// SEND_THROTTLE on its own only spaces sends out, it does not bound them: a
+	// link a minute forever is 1440 emails a day to a single address, which is
+	// enough to burn through a Resend plan and bury whoever owns that address,
+	// off nothing more than a guessed email. These are what actually bound the
+	// send budget, and because they are counted from state in datastore they
+	// hold across every running instance.
+	SEND_LIMIT_HOUR = 5
+	SEND_LIMIT_DAY  = 15
+
+	SEND_WINDOW_HOUR = time.Hour
+	SEND_WINDOW_DAY  = 24 * time.Hour
+
 	// tokenBytes is the amount of entropy behind a link.
 	tokenBytes = 32
 )
@@ -78,6 +94,14 @@ func Request(address string, next string) error {
 		return ErrThrottled
 	}
 
+	// Same error as the throttle on purpose. The caller already renders both as
+	// success, so being capped stays indistinguishable from a link going out and
+	// the form cannot be used to work out which addresses are real.
+	if OverSendLimit(user.RecentLinkSents, time.Now()) {
+		log.Printf("magic link send limit reached for an address")
+		return ErrThrottled
+	}
+
 	token, tokenHash, err := newToken()
 	if err != nil {
 		return err
@@ -100,11 +124,38 @@ func Request(address string, next string) error {
 
 	// Only throttle once something was actually delivered, so a Resend outage
 	// doesn't lock the user out for a minute at a time.
-	if err = data.MarkLinkSent(address, time.Now()); err != nil {
+	if err = data.MarkLinkSent(address, time.Now(), SEND_WINDOW_DAY); err != nil {
 		log.Printf("could not record magic link send time: %s", err.Error())
 	}
 
 	return nil
+}
+
+// OverSendLimit reports whether an address has had its allowance of links for
+// now. Both windows are counted off the same list of send times, which
+// data.MarkLinkSent keeps pruned to the longer of the two.
+func OverSendLimit(sends []int64, now time.Time) bool {
+	withinHour, withinDay := 0, 0
+
+	for _, send := range sends {
+		age := now.Sub(time.Unix(send, 0))
+		if age < 0 {
+			// A send stamped in the future: clock skew, or an entity edited by
+			// hand. Count it against the tighter window rather than ignore it,
+			// so a bad value cannot be used to unlock more sends.
+			age = 0
+		}
+
+		if age < SEND_WINDOW_HOUR {
+			withinHour++
+		}
+
+		if age < SEND_WINDOW_DAY {
+			withinDay++
+		}
+	}
+
+	return withinHour >= SEND_LIMIT_HOUR || withinDay >= SEND_LIMIT_DAY
 }
 
 // Consume redeems a magic link and returns the email address it belongs to. The

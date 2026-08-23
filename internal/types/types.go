@@ -19,6 +19,11 @@ type User struct {
 	LastLogin int64  `json:"last_login"`
 	// LastLinkSent is used to throttle how often magic links can be requested.
 	LastLinkSent int64 `json:"last_link_sent"`
+	// RecentLinkSents holds the unix times of the magic links mailed to this
+	// address inside the last day, oldest first. The hourly and daily send caps
+	// are counted from it. It is left out of the indexes: nothing queries on it,
+	// and a repeated indexed property costs an index row per entry.
+	RecentLinkSents []int64 `json:"recent_link_sents" datastore:",noindex"`
 	// Admin lets this user see and change every link, not just their own.
 	Admin bool `json:"admin"`
 	// Disabled keeps the entity around for history while blocking logins.

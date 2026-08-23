@@ -336,11 +336,14 @@ func isFieldMismatch(err error) bool {
 	return errors.As(err, &mismatch)
 }
 
-// setUserProperties updates properties on a user entity in place. It reads into
-// a PropertyList rather than types.User so that any other properties on the
-// entity - notes, a display name, whatever got added by hand - survive the
-// write untouched.
-func setUserProperties(email string, values map[string]interface{}) error {
+// mutateUser rewrites properties on a user entity inside a transaction. change
+// is handed the entity as it currently stands and returns the properties to
+// write, so an update can be built from what is already there.
+//
+// It works on a PropertyList rather than types.User so that any other
+// properties on the entity - notes, a display name, whatever got added by hand
+// - survive the write untouched.
+func mutateUser(email string, change func(current datastore.PropertyList) ([]datastore.Property, error)) error {
 	key := userKey(email)
 	_, err := datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
 		var properties datastore.PropertyList
@@ -351,26 +354,47 @@ func setUserProperties(email string, values map[string]interface{}) error {
 			return err
 		}
 
-		for name, value := range values {
+		writes, err := change(properties)
+		if err != nil {
+			return err
+		}
+
+		// A write replaces the whole property, indexing included, so what ends
+		// up on the entity is what the caller asked for rather than a mix of
+		// that and however the property happened to be stored before.
+		for _, write := range writes {
 			updated := false
 			for i := range properties {
-				if properties[i].Name == name {
-					properties[i].Value = value
+				if properties[i].Name == write.Name {
+					properties[i] = write
 					updated = true
 					break
 				}
 			}
 
 			if !updated {
-				properties = append(properties, datastore.Property{Name: name, Value: value})
+				properties = append(properties, write)
 			}
 		}
 
-		_, err := tx.Put(key, &properties)
+		_, err = tx.Put(key, &properties)
 		return err
 	})
 
 	return err
+}
+
+// setUserProperties updates properties on a user entity in place, leaving every
+// other property alone.
+func setUserProperties(email string, values map[string]interface{}) error {
+	return mutateUser(email, func(datastore.PropertyList) ([]datastore.Property, error) {
+		writes := make([]datastore.Property, 0, len(values))
+		for name, value := range values {
+			writes = append(writes, datastore.Property{Name: name, Value: value})
+		}
+
+		return writes, nil
+	})
 }
 
 // UpdateUser changes a user's role or whether they're blocked. A nil pointer
@@ -477,10 +501,72 @@ func NewUser(email string, admin bool) (user types.User, err error) {
 	return user, nil
 }
 
-// MarkLinkSent records the time a magic link was mailed to a user, so repeated
-// requests can be throttled.
-func MarkLinkSent(email string, at time.Time) error {
-	return setUserProperties(email, map[string]interface{}{"LastLinkSent": at.Unix()})
+// MAX_RECENT_LINK_SENTS is a ceiling on how many send times are kept on one
+// user, whatever retain works out to. Pruning by age already bounds the list to
+// however many sends the caller's own caps allow in that time; this only stops
+// an entity that somehow got past those from growing without limit.
+const MAX_RECENT_LINK_SENTS = 64
+
+// MarkLinkSent records the time a magic link was mailed to a user. It moves the
+// throttle forward and appends to the list of recent sends that the caller's
+// rate caps are counted from, dropping anything older than retain on the way
+// past so the list stays a bounded handful of numbers however long an account
+// lives.
+func MarkLinkSent(email string, at time.Time, retain time.Duration) error {
+	return mutateUser(email, func(current datastore.PropertyList) ([]datastore.Property, error) {
+		sends := append(recentLinkSents(current, at.Add(-retain)), at.Unix())
+		if len(sends) > MAX_RECENT_LINK_SENTS {
+			sends = sends[len(sends)-MAX_RECENT_LINK_SENTS:]
+		}
+
+		// A repeated property is written as a slice of interface{}, one entry
+		// per value.
+		values := make([]interface{}, 0, len(sends))
+		for _, send := range sends {
+			values = append(values, send)
+		}
+
+		return []datastore.Property{
+			{Name: "LastLinkSent", Value: at.Unix()},
+			{Name: "RecentLinkSents", Value: values, NoIndex: true},
+		}, nil
+	})
+}
+
+// recentLinkSents reads the send times off a user entity, keeping only those at
+// or after cutoff. A repeated property comes back as a slice of interface{},
+// but an entity carrying exactly one value can present it bare, so both shapes
+// are read.
+func recentLinkSents(properties datastore.PropertyList, cutoff time.Time) []int64 {
+	var sends []int64
+
+	for _, property := range properties {
+		if property.Name != "RecentLinkSents" {
+			continue
+		}
+
+		switch value := property.Value.(type) {
+		case []interface{}:
+			for _, entry := range value {
+				if at, ok := entry.(int64); ok {
+					sends = append(sends, at)
+				}
+			}
+		case int64:
+			sends = append(sends, value)
+		}
+
+		break
+	}
+
+	kept := sends[:0]
+	for _, at := range sends {
+		if !time.Unix(at, 0).Before(cutoff) {
+			kept = append(kept, at)
+		}
+	}
+
+	return kept
 }
 
 // MarkLoggedIn records a successful login on the user entity.

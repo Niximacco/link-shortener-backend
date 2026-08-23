@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -116,4 +117,20 @@ func SafeNext(next string) string {
 	}
 
 	return next
+}
+
+// TooManyRequests renders the page a caller gets when they have been turned
+// away by a rate limit, with a Retry-After for anything that reads one. It says
+// nothing about email addresses, because the limits that use it are counted per
+// connection and never looked at one.
+func TooManyRequests(retryAfter time.Duration) gin.HandlerFunc {
+	seconds := strconv.Itoa(int(retryAfter.Seconds()))
+
+	return func(c *gin.Context) {
+		c.Header("Retry-After", seconds)
+
+		page := New("Too many attempts")
+		page.Error = "Too many attempts from your connection. Wait a minute and try again."
+		Render(c, http.StatusTooManyRequests, MessagePage, page)
+	}
 }

@@ -3,6 +3,7 @@ package magiclink
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidAddress(t *testing.T) {
@@ -79,5 +80,96 @@ func TestBuildURLCarriesTokenAndNext(t *testing.T) {
 func TestBuildURLOmitsEmptyNext(t *testing.T) {
 	if url := buildURL("abc", ""); strings.Contains(url, "next=") {
 		t.Errorf("buildURL() = %q, want no next parameter", url)
+	}
+}
+
+// sendsAgo turns a list of ages into the send times an entity would carry.
+func sendsAgo(now time.Time, ages ...time.Duration) []int64 {
+	sends := make([]int64, 0, len(ages))
+	for _, age := range ages {
+		sends = append(sends, now.Add(-age).Unix())
+	}
+
+	return sends
+}
+
+func TestOverSendLimitAllowsNormalUse(t *testing.T) {
+	now := time.Now()
+
+	cases := map[string][]int64{
+		"a brand new address":     nil,
+		"one link a moment ago":   sendsAgo(now, time.Minute),
+		"a few spread over a day": sendsAgo(now, 20*time.Hour, 10*time.Hour, 2*time.Hour),
+	}
+
+	for name, sends := range cases {
+		if OverSendLimit(sends, now) {
+			t.Errorf("%s: should not be over the limit", name)
+		}
+	}
+}
+
+func TestOverSendLimitStopsAnHourlyFlood(t *testing.T) {
+	now := time.Now()
+
+	var ages []time.Duration
+	for i := 0; i < SEND_LIMIT_HOUR; i++ {
+		ages = append(ages, time.Duration(i+1)*time.Minute)
+	}
+
+	if !OverSendLimit(sendsAgo(now, ages...), now) {
+		t.Fatalf("%d sends inside the hour should be over the hourly cap", SEND_LIMIT_HOUR)
+	}
+}
+
+func TestTheHourlyCapLetsGoOnceTheHourPasses(t *testing.T) {
+	now := time.Now()
+
+	// The same flood, but all of it now older than the hourly window. The daily
+	// cap is the only thing still counting, and this is under it.
+	var ages []time.Duration
+	for i := 0; i < SEND_LIMIT_HOUR; i++ {
+		ages = append(ages, time.Duration(i+2)*time.Hour)
+	}
+
+	if OverSendLimit(sendsAgo(now, ages...), now) {
+		t.Fatal("sends older than the hourly window should stop counting against it")
+	}
+}
+
+func TestOverSendLimitStopsADailyFlood(t *testing.T) {
+	now := time.Now()
+
+	// Spread wide enough that no hour holds enough to trip the hourly cap, so
+	// only the daily one can catch this.
+	var ages []time.Duration
+	for i := 0; i < SEND_LIMIT_DAY; i++ {
+		ages = append(ages, time.Duration(i+1)*90*time.Minute)
+	}
+
+	sends := sendsAgo(now, ages...)
+
+	if !OverSendLimit(sends, now) {
+		t.Fatalf("%d sends inside the day should be over the daily cap", SEND_LIMIT_DAY)
+	}
+
+	// One fewer, and it is allowed - the cap is the ceiling, not the floor.
+	if OverSendLimit(sends[1:], now) {
+		t.Fatal("one under the daily cap should still be allowed")
+	}
+}
+
+// A send stamped in the future is either clock skew or a hand-edited entity.
+// Either way it must not read as "long ago" and hand back the allowance.
+func TestFutureSendsCountAgainstTheLimit(t *testing.T) {
+	now := time.Now()
+
+	var ages []time.Duration
+	for i := 0; i < SEND_LIMIT_HOUR; i++ {
+		ages = append(ages, -time.Duration(i+1)*time.Hour)
+	}
+
+	if !OverSendLimit(sendsAgo(now, ages...), now) {
+		t.Fatal("sends dated in the future were treated as expired")
 	}
 }
