@@ -126,6 +126,31 @@
   }
   .result a { color: inherit; font-weight: 600; }
   .muted-small { font-size: 13px; color: var(--muted); }
+  label.check {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 0 0 16px;
+    font-size: 13px;
+    font-weight: 400;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  label.check input { width: auto; margin: 2px 0 0; }
+  .tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 20px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--muted);
+    vertical-align: middle;
+  }
+  .tag.off { background: var(--error-bg); color: var(--error-text); border-color: transparent; }
+  td.who-cell { overflow-wrap: anywhere; }
+  code { font-size: 12px; }
   .fields { display: flex; gap: 14px; }
   .fields > div { flex: 1; min-width: 0; }
   .list-head {
@@ -187,6 +212,19 @@
 </style>
 </head>
 <body>
+<script>
+  // Shared by every page that talks to the api. A 401 means the session went
+  // away while the page was open, so hand the visitor back to the login form
+  // instead of showing them a failure they can't act on.
+  async function send(url, options) {
+    const response = await fetch(url, options);
+    if (response.status === 401) {
+      window.location = "/login";
+      throw new Error("signed out");
+    }
+    return response;
+  }
+</script>
 {{template "content" .}}
 </body>
 </html>{{end}}

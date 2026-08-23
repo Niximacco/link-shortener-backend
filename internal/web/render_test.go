@@ -207,3 +207,146 @@ func TestDashboardEscapesLinkValues(t *testing.T) {
 		t.Error("a javascript: destination was rendered as a live href")
 	}
 }
+
+func TestDashboardHidesAccessFromNonAdmins(t *testing.T) {
+	page := dashboardWithLinks()
+	page.IsAdmin = false
+
+	body := render(t, DashboardPage, page)
+
+	for _, control := range []string{`href="/users"`, "Manage users", "add-user", "new-admin"} {
+		if strings.Contains(body, control) {
+			t.Errorf("dashboard exposed the access control %q to a non-admin", control)
+		}
+	}
+}
+
+func TestDashboardShowsAccessToAdmins(t *testing.T) {
+	page := dashboardWithLinks()
+	page.IsAdmin = true
+
+	body := render(t, DashboardPage, page)
+
+	if !strings.Contains(body, `href="/users"`) {
+		t.Error("dashboard did not link an admin to the access page")
+	}
+}
+
+func usersPage() Page {
+	page := New("Access")
+	page.Email = "me@example.com"
+	page.IsAdmin = true
+	page.Limit = 500
+	page.Users = []types.User{
+		{Email: "me@example.com", Admin: true, Created: 1755900000, LastLogin: 1755990000},
+		{Email: "someone@example.com", Created: 1755000000},
+		{Email: "gone@example.com", Created: 1754000000, Disabled: true},
+	}
+
+	return page
+}
+
+func TestUsersPageListsEveryone(t *testing.T) {
+	body := render(t, UsersPage, usersPage())
+
+	for _, want := range []string{"me@example.com", "someone@example.com", "gone@example.com", "Admin", "User"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("users page did not render %q", want)
+		}
+	}
+
+	// A user who has never signed in has a zero LastLogin.
+	if !strings.Contains(body, ">-<") && !strings.Contains(body, "-\n") {
+		t.Error("users page did not render a never-signed-in user as a dash")
+	}
+}
+
+func TestUsersPageMarksYouAndDisabled(t *testing.T) {
+	body := render(t, UsersPage, usersPage())
+
+	if !strings.Contains(body, `<span class="tag">you</span>`) {
+		t.Error("users page did not mark the signed-in user")
+	}
+
+	if !strings.Contains(body, `<span class="tag off">disabled</span>`) {
+		t.Error("users page did not mark the disabled user")
+	}
+}
+
+func TestUsersPageCarriesTheAddForm(t *testing.T) {
+	body := render(t, UsersPage, usersPage())
+
+	for _, control := range []string{`id="add-user"`, `id="new-email"`, `id="new-admin"`, "Add user"} {
+		if !strings.Contains(body, control) {
+			t.Errorf("users page did not render %q", control)
+		}
+	}
+}
+
+func TestUsersPageEmptyState(t *testing.T) {
+	page := usersPage()
+	page.Users = nil
+
+	body := render(t, UsersPage, page)
+	if !strings.Contains(body, "Nobody can sign in yet") {
+		t.Error("users page did not render the empty state")
+	}
+}
+
+func TestUsersPageEscapesAddresses(t *testing.T) {
+	page := usersPage()
+	page.Users = []types.User{{Email: `x"><script>alert(1)</script>`}}
+
+	body := render(t, UsersPage, page)
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Error("an address escaped into markup")
+	}
+}
+
+func TestUsersPageOffersRoleAndAccessControls(t *testing.T) {
+	body := render(t, UsersPage, usersPage())
+
+	for _, control := range []string{"toggle-admin", "toggle-disabled", "Make admin", "Remove admin", "Disable", "Enable"} {
+		if !strings.Contains(body, control) {
+			t.Errorf("users page did not render the control %q", control)
+		}
+	}
+}
+
+func TestUsersPageWillNotLetYouChangeYourself(t *testing.T) {
+	page := usersPage()
+	body := render(t, UsersPage, page)
+
+	// The signed-in admin's own row must carry no controls: demoting or
+	// disabling yourself is how a service ends up with no working admin.
+	rows := strings.Split(body, "<tr ")
+	var own string
+	for _, row := range rows {
+		if strings.Contains(row, `data-email="me@example.com"`) {
+			own = row
+			break
+		}
+	}
+
+	if own == "" {
+		t.Fatal("could not find the signed-in user's row")
+	}
+
+	if strings.Contains(own, "data-action") {
+		t.Errorf("the signed-in user's own row offered controls:\n%s", own)
+	}
+
+	if !strings.Contains(own, "you") {
+		t.Error("the signed-in user's row was not marked")
+	}
+}
+
+func TestUsersPageCarriesStateForTheToggles(t *testing.T) {
+	body := render(t, UsersPage, usersPage())
+
+	for _, want := range []string{`data-admin="true"`, `data-admin="false"`, `data-disabled="true"`, `data-disabled="false"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("users page did not render %q, so a toggle can't tell which way to flip", want)
+		}
+	}
+}

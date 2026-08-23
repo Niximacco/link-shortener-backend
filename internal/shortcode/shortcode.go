@@ -39,6 +39,8 @@ func New(opts ...Option) string {
 var reserved = map[string]bool{
 	"link":   true,
 	"links":  true,
+	"user":   true,
+	"users":  true,
 	"login":  true,
 	"logout": true,
 	"auth":   true,

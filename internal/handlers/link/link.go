@@ -40,7 +40,7 @@ func getLinkDetails(short string) (link types.Link, err error) {
 // gets their own address and is held to their own links.
 func scope(c *gin.Context) (email string, owner string, admin bool) {
 	email = auth.Email(c)
-	admin = data.IsAdmin(email)
+	admin = auth.IsAdmin(c)
 
 	if admin {
 		return email, "", true
