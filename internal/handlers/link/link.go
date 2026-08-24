@@ -114,7 +114,13 @@ func RedirectToLink(c *gin.Context) {
 	short = strings.ToUpper(short)
 	link, err := getLinkDetails(short)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "That link doesn't exist"})
+		// A code nobody can be sent anywhere for is not worth an error page. The
+		// visitor followed a link and wants to land somewhere, so they land on the
+		// front of the site.
+		if !errors.Is(err, data.NotFoundErr) {
+			log.Printf("could not look up %s: %s", short, err.Error())
+		}
+		c.Redirect(http.StatusFound, "/")
 		return
 	}
 
