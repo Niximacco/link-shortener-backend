@@ -75,7 +75,7 @@ whose origin cannot be established are **not** limited - see `TRUSTED_PROXY_DEPT
 | `POST /auth/callback`     | -         | Spends the token, starts the session                |
 | `POST /logout`            | -         | Clears the session cookie                           |
 | `GET /api/auth/session`   | session   | `{"email": "..."}` for the current session          |
-| `GET /:short`             | -         | Public redirect, counts a click                     |
+| `GET /:short`             | -         | Public redirect, counts a click. Unknown code redirects to `/` |
 | `GET /links`              | session   | Your links as json. Admins add `?all=1` for everyone's. `?tag=` filters |
 | `GET /link/:short`        | session   | Link details as json                                |
 | `POST /link`              | session   | Creates a short link                                |
@@ -175,6 +175,12 @@ copy of the link read outside the transaction, so simultaneous clicks overwrote 
 The cost is one datastore round trip on the redirect path. If that ever matters more than
 exact counts, the alternative is enabling always-on cpu for the service rather than going
 back to a goroutine.
+
+An unknown short code is not an error page. Any failure to look the code up - most often a
+code that was never created - answers with a 302 to `/`, which is the dashboard when you are
+signed in and `/login` when you are not, so somebody who followed a dead link lands on the
+front of the site instead of on a JSON body. Lookups that fail for a reason other than
+"no such link" still get logged before the redirect goes out.
 
 ## Configuration
 
