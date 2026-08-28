@@ -7,35 +7,56 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Niximacco/ajn_auth/pkg/authclient"
 	"github.com/anthonynixon/link-shortener-backend/internal/auth"
 	data "github.com/anthonynixon/link-shortener-backend/internal/cloud"
-	"github.com/anthonynixon/link-shortener-backend/internal/email"
-	"github.com/anthonynixon/link-shortener-backend/internal/magiclink"
 	"github.com/anthonynixon/link-shortener-backend/internal/ratelimit"
 	"github.com/anthonynixon/link-shortener-backend/internal/web"
 	"github.com/gin-gonic/gin"
 )
 
+// login is this site's half of the magic link service at auth.ajn.me. Minting
+// the token, mailing it, hosting the "yes, it was me" page and the per-address
+// send caps all live there now, because they were byte-identical in four sites
+// and a bug in that email was four fixes.
+//
+// What did not move is the part that is actually ours: who may sign in. The
+// service can say somebody proved they can read an address. It holds no user
+// list and has no opinion about whether that address gets a session here.
+var login = authclient.New()
+
+// LINK_VALID_MINUTES is what the "check your email" page tells the visitor. The
+// clock behind it belongs to the service, so this is a copy of a number set
+// somewhere else - which is fine for a sentence of reassurance, and is why
+// nothing here decides anything from it.
+const LINK_VALID_MINUTES = 15
+
 // The two routes that turn an anonymous request into datastore work get a per
 // caller ceiling. This is about the cost of being probed - datastore reads and
 // instance time - rather than about email: an address that is not on the allow
-// list never gets mailed anything, and the ones that are have their own caps in
-// magiclink. Both are generous enough that a person retrying will not meet
-// them, and per instance, so they are a brake on floods rather than a promise.
+// list never reaches the service at all, and the ones that are have their own
+// per-address caps there. Both are generous enough that a person retrying will
+// not meet them, and per instance, so they are a brake on floods rather than a
+// promise.
 var (
 	loginLimiter    = ratelimit.New(10, time.Minute)
 	callbackLimiter = ratelimit.New(20, time.Minute)
 )
 
 func AddAuthV1(router *gin.Engine) {
+	// Said at start rather than at somebody's first login, which is the other
+	// place an unset key would be discovered.
+	if !login.Configured() {
+		log.Print("WARNING: AJN_AUTH_URL and/or AJN_AUTH_API_KEY are unset, magic link login is disabled")
+	}
+
 	// The dashboard is the front door: signed in you get the link tools, signed
 	// out you get bounced to /login.
 	router.GET("/", auth.RequiredPage(), Dashboard)
 
 	router.GET("/login", auth.Optional(), LoginPage)
 	router.POST("/login", loginLimiter.Middleware(web.TooManyRequests(time.Minute)), auth.Optional(), RequestMagicLink)
-	router.GET("/auth/callback", ConfirmLogin)
-	router.POST("/auth/callback", callbackLimiter.Middleware(web.TooManyRequests(time.Minute)), CompleteLogin)
+	router.GET("/auth/callback", callbackLimiter.Middleware(web.TooManyRequests(time.Minute)), CompleteLogin)
 	router.POST("/logout", Logout)
 
 	router.GET("/api/auth/session", auth.Required(), Session)
@@ -102,87 +123,104 @@ func LoginPage(c *gin.Context) {
 
 func RequestMagicLink(c *gin.Context) {
 	next := web.SafeNext(c.PostForm("next"))
-	address := strings.TrimSpace(c.PostForm("email"))
+	address := data.NormalizeEmail(c.PostForm("email"))
 
 	page := web.New("Sign in")
 	page.Next = next
 	page.Email = address
 
-	err := magiclink.Request(address, next)
-
-	switch {
-	case err == nil:
-	// A link went out.
-
-	case errors.Is(err, magiclink.ErrInvalidEmail):
+	// Junk is worth saying so about before anything else happens. This is a
+	// check on the shape of the string and tells the visitor nothing about who
+	// has an account here, which is what the rest of this function is careful
+	// of.
+	if !data.ValidAddress(address) {
 		page.Error = "That doesn't look like an email address."
 		web.Render(c, http.StatusBadRequest, web.LoginPage, page)
 		return
+	}
 
-	case errors.Is(err, magiclink.ErrNotAllowed), errors.Is(err, magiclink.ErrThrottled):
-	// Both of these look exactly like success to the visitor. Saying "no such
-	// user" here would turn the login form into an address checker, and saying
-	// "slow down" would confirm the address exists.
+	// The user list is ours and stays ours. An address that is not on it gets
+	// the same page as one that is, and no call is made - so the sign in form
+	// cannot be used to work out who has an account here, and a stranger's
+	// address never costs us an email.
+	if _, err := data.GetUser(address); err == nil {
+		switch _, err := login.RequestLink(c, address, next); {
+		case err == nil:
+			// Sent or throttled. The two come back the same way on purpose and
+			// are rendered the same way here: telling one address "slow down"
+			// and another "check your email" is the address checker again.
 
-	case errors.Is(err, email.ErrNotConfigured):
-		log.Print("magic link requested but email sending is not configured")
-		page.Title = "Sign in unavailable"
-		page.Error = "Sign in is temporarily unavailable. Please try again later."
-		web.Render(c, http.StatusServiceUnavailable, web.MessagePage, page)
-		return
+		case errors.Is(err, authclient.ErrInvalidEmail):
+			page.Error = "That doesn't look like an email address."
+			web.Render(c, http.StatusBadRequest, web.LoginPage, page)
+			return
 
-	default:
-		log.Printf("could not send magic link: %s", err.Error())
-		page.Title = "Something went wrong"
-		page.Error = "We couldn't send your sign in link. Please try again."
-		web.Render(c, http.StatusInternalServerError, web.MessagePage, page)
-		return
+		case errors.Is(err, authclient.ErrNotConfigured), errors.Is(err, authclient.ErrUnauthorized):
+			// Ours to fix rather than theirs: no key, a wrong url, or a key
+			// this site no longer holds. Worth its own log line, because
+			// nothing else in the service will notice.
+			log.Printf("this site cannot ask ajn auth for a link: %s", err.Error())
+			page.Title = "Sign in unavailable"
+			page.Error = "Sign in is temporarily unavailable. Please try again later."
+			web.Render(c, http.StatusServiceUnavailable, web.MessagePage, page)
+			return
+
+		default:
+			log.Printf("could not send a magic link: %s", err.Error())
+			page.Title = "Sign in unavailable"
+			page.Error = "We couldn't send your sign in link. Please try again."
+			web.Render(c, http.StatusServiceUnavailable, web.MessagePage, page)
+			return
+		}
 	}
 
 	page.Title = "Check your email"
-	page.ExpiresMinutes = int(magiclink.TOKEN_VALID_TIME.Minutes())
+	page.ExpiresMinutes = LINK_VALID_MINUTES
 	web.Render(c, http.StatusOK, web.SentPage, page)
 }
 
-// ConfirmLogin renders the "yes, it was me" step. Following the emailed link
-// deliberately does not sign anyone in: mail scanners and link previewers fetch
-// urls out of email, and a plain GET would let them burn the token before the
-// real person ever clicked it.
-func ConfirmLogin(c *gin.Context) {
-	token := c.Query("token")
-
-	page := web.New("Finish signing in")
-	page.Next = web.SafeNext(c.Query("next"))
-
-	if token == "" {
-		page.Title = "That link is incomplete"
-		page.Error = "This sign in link is missing its token. Request a new one."
-		web.Render(c, http.StatusBadRequest, web.MessagePage, page)
-		return
-	}
-
-	page.Token = token
-	web.Render(c, http.StatusOK, web.ConfirmPage, page)
-}
-
+// CompleteLogin turns an exchange code into a session.
+//
+// The confirm step that used to be here - "yes, it was me", which is what kept
+// a mail scanner from burning the token on its way past - moved to the service
+// along with the token itself. What lands on this route now is a code that has
+// already been through it, arriving on one redirect and worth nothing a moment
+// later.
 func CompleteLogin(c *gin.Context) {
-	next := web.SafeNext(c.PostForm("next"))
-
-	address, err := magiclink.Consume(c.PostForm("token"))
+	identity, err := login.Redeem(c, c.Query("code"))
 	if err != nil {
 		page := web.New("That link didn't work")
 
-		switch {
-		case errors.Is(err, magiclink.ErrBadToken):
+		if errors.Is(err, authclient.ErrBadCode) {
 			page.Error = "This sign in link has already been used or has expired. Request a new one."
-		case errors.Is(err, magiclink.ErrNotAllowed):
-			page.Error = "That account can no longer sign in."
-		default:
-			log.Printf("could not complete login: %s", err.Error())
-			page.Error = "Something went wrong signing you in. Please try again."
+			web.Render(c, http.StatusUnauthorized, web.MessagePage, page)
+			return
 		}
 
-		web.Render(c, http.StatusUnauthorized, web.MessagePage, page)
+		log.Printf("could not redeem a login code: %s", err.Error())
+		page.Title = "Sign in unavailable"
+		page.Error = "Something went wrong signing you in. Please try again."
+		web.Render(c, http.StatusServiceUnavailable, web.MessagePage, page)
+		return
+	}
+
+	// Ask the user list again. The link this code came from can sit in an inbox
+	// for a quarter of an hour, and an account can be removed in fourteen
+	// minutes of that.
+	address := data.NormalizeEmail(identity.Email)
+	if _, err = data.GetUser(address); err != nil {
+		page := web.New("That account can no longer sign in")
+
+		if errors.Is(err, data.UserNotFoundErr) || errors.Is(err, data.UserDisabledErr) {
+			page.Error = "That account can no longer sign in."
+			web.Render(c, http.StatusUnauthorized, web.MessagePage, page)
+			return
+		}
+
+		log.Printf("could not check who is signing in: %s", err.Error())
+		page.Title = "Something went wrong"
+		page.Error = "Something went wrong signing you in. Please try again."
+		web.Render(c, http.StatusInternalServerError, web.MessagePage, page)
 		return
 	}
 
@@ -194,8 +232,18 @@ func CompleteLogin(c *gin.Context) {
 		return
 	}
 
+	// The sign in already happened; a failure to write it down is not worth
+	// turning anybody away for.
+	if err = data.MarkLoggedIn(address, time.Now()); err != nil {
+		log.Printf("could not record login time: %s", err.Error())
+	}
+
 	log.Printf("signed in %s", address)
-	c.Redirect(http.StatusSeeOther, next)
+
+	// The service hands back the next it was given, untouched and unexamined.
+	// It is our value, so it goes through our own sanitizing before a browser
+	// is pointed at it.
+	c.Redirect(http.StatusSeeOther, web.SafeNext(identity.Next))
 }
 
 func Logout(c *gin.Context) {

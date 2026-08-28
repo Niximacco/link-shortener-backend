@@ -1,12 +1,15 @@
-FROM golang:1.20-alpine AS build
+FROM golang:1.25-alpine AS build
 
 WORKDIR /go/src/github.com/AnthonyNixon/link-shortener-backend
 
-COPY go.mod ./
+# The module files come first so the dependency download is cached separately
+# from the source: editing a handler should not re-download the sdk.
+COPY go.mod go.sum ./
+RUN go mod download
+
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-RUN go get ./...
 RUN go build -o /bin/link-shortener-backend ./cmd/link-shortener-backend
 
 FROM alpine:3.17 AS deploy

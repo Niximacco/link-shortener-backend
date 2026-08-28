@@ -23,16 +23,12 @@ var NotFoundErr = errors.New("link not found in datastore")
 var NotOwnedErr = errors.New("that link belongs to somebody else")
 
 var (
-	UserNotFoundErr  = errors.New("user not found in datastore")
-	UserDisabledErr  = errors.New("user is disabled")
-	TokenNotFoundErr = errors.New("login token not found")
-	TokenUsedErr     = errors.New("login token has already been used")
-	TokenExpiredErr  = errors.New("login token has expired")
+	UserNotFoundErr = errors.New("user not found in datastore")
+	UserDisabledErr = errors.New("user is disabled")
 )
 
 const (
-	userKind      = "user"
-	magicLinkKind = "magic_link"
+	userKind = "user"
 )
 
 func Initialize() {
@@ -309,14 +305,29 @@ func NormalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
 
-func userKey(email string) *datastore.Key {
-	key := datastore.NameKey(userKind, NormalizeEmail(email), nil)
-	key.Namespace = namespace
-	return key
+// ValidAddress is a deliberately loose check. The real check is whether the
+// address exists in the user kind; this only catches obvious junk before we
+// bother datastore, or auth.ajn.me, with it.
+func ValidAddress(email string) bool {
+	if len(email) < 3 || len(email) > 254 {
+		return false
+	}
+
+	at := strings.LastIndex(email, "@")
+	if at < 1 || at == len(email)-1 {
+		return false
+	}
+
+	domain := email[at+1:]
+	if !strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
+		return false
+	}
+
+	return !strings.ContainsAny(email, " \t\r\n<>\"")
 }
 
-func magicLinkKey(tokenHash string) *datastore.Key {
-	key := datastore.NameKey(magicLinkKind, tokenHash, nil)
+func userKey(email string) *datastore.Key {
+	key := datastore.NameKey(userKind, NormalizeEmail(email), nil)
 	key.Namespace = namespace
 	return key
 }
@@ -512,126 +523,8 @@ func NewUser(email string, admin bool) (user types.User, err error) {
 	return user, nil
 }
 
-// MAX_RECENT_LINK_SENTS is a ceiling on how many send times are kept on one
-// user, whatever retain works out to. Pruning by age already bounds the list to
-// however many sends the caller's own caps allow in that time; this only stops
-// an entity that somehow got past those from growing without limit.
-const MAX_RECENT_LINK_SENTS = 64
-
-// MarkLinkSent records the time a magic link was mailed to a user. It moves the
-// throttle forward and appends to the list of recent sends that the caller's
-// rate caps are counted from, dropping anything older than retain on the way
-// past so the list stays a bounded handful of numbers however long an account
-// lives.
-func MarkLinkSent(email string, at time.Time, retain time.Duration) error {
-	return mutateUser(email, func(current datastore.PropertyList) ([]datastore.Property, error) {
-		sends := append(recentLinkSents(current, at.Add(-retain)), at.Unix())
-		if len(sends) > MAX_RECENT_LINK_SENTS {
-			sends = sends[len(sends)-MAX_RECENT_LINK_SENTS:]
-		}
-
-		// A repeated property is written as a slice of interface{}, one entry
-		// per value.
-		values := make([]interface{}, 0, len(sends))
-		for _, send := range sends {
-			values = append(values, send)
-		}
-
-		return []datastore.Property{
-			{Name: "LastLinkSent", Value: at.Unix()},
-			{Name: "RecentLinkSents", Value: values, NoIndex: true},
-		}, nil
-	})
-}
-
-// recentLinkSents reads the send times off a user entity, keeping only those at
-// or after cutoff. A repeated property comes back as a slice of interface{},
-// but an entity carrying exactly one value can present it bare, so both shapes
-// are read.
-func recentLinkSents(properties datastore.PropertyList, cutoff time.Time) []int64 {
-	var sends []int64
-
-	for _, property := range properties {
-		if property.Name != "RecentLinkSents" {
-			continue
-		}
-
-		switch value := property.Value.(type) {
-		case []interface{}:
-			for _, entry := range value {
-				if at, ok := entry.(int64); ok {
-					sends = append(sends, at)
-				}
-			}
-		case int64:
-			sends = append(sends, value)
-		}
-
-		break
-	}
-
-	kept := sends[:0]
-	for _, at := range sends {
-		if !time.Unix(at, 0).Before(cutoff) {
-			kept = append(kept, at)
-		}
-	}
-
-	return kept
-}
-
 // MarkLoggedIn records a successful login on the user entity.
 func MarkLoggedIn(email string, at time.Time) error {
 	return setUserProperties(email, map[string]interface{}{"LastLogin": at.Unix()})
 }
 
-// NewMagicLink stores a pending login token. tokenHash is the SHA-256 of the
-// token that was mailed out; the token itself is never written to datastore.
-func NewMagicLink(tokenHash string, email string, expiresAt time.Time) error {
-	link := types.MagicLink{
-		Email:     NormalizeEmail(email),
-		Created:   time.Now().Unix(),
-		ExpiresAt: expiresAt.Unix(),
-		Expires:   expiresAt,
-	}
-
-	_, err := datastoreClient.Put(ctx, magicLinkKey(tokenHash), &link)
-	return err
-}
-
-// ConsumeMagicLink atomically marks a login token as used and returns the email
-// address it was issued to. A token can only be consumed once; a second attempt
-// returns TokenUsedErr.
-func ConsumeMagicLink(tokenHash string) (email string, err error) {
-	key := magicLinkKey(tokenHash)
-	_, err = datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
-		var link types.MagicLink
-		if err := tx.Get(key, &link); err != nil {
-			if errors.Is(err, datastore.ErrNoSuchEntity) {
-				return TokenNotFoundErr
-			}
-			return err
-		}
-
-		if link.Used {
-			return TokenUsedErr
-		}
-
-		if time.Now().Unix() > link.ExpiresAt {
-			return TokenExpiredErr
-		}
-
-		link.Used = true
-		link.UsedAt = time.Now().Unix()
-		email = link.Email
-
-		_, err := tx.Put(key, &link)
-		return err
-	})
-
-	if err != nil {
-		return "", err
-	}
-
-	return email, nil
-}

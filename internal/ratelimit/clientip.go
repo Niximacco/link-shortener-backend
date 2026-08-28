@@ -53,7 +53,7 @@ func init() {
 // callers apart has two failure modes and both are worse than letting the
 // request through: bucket the whole internet together and it locks everybody
 // out at once, or treat a forged header as identity and it limits nobody. The
-// email address caps in magiclink are the ones that actually protect the send
+// per address caps at auth.ajn.me are the ones that actually protect the send
 // budget, and they do not depend on this.
 func ClientIP(c *gin.Context) string {
 	address := resolveClientIP(c)

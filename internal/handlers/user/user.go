@@ -7,7 +7,6 @@ import (
 
 	"github.com/anthonynixon/link-shortener-backend/internal/auth"
 	data "github.com/anthonynixon/link-shortener-backend/internal/cloud"
-	"github.com/anthonynixon/link-shortener-backend/internal/magiclink"
 	"github.com/anthonynixon/link-shortener-backend/internal/web"
 	"github.com/gin-gonic/gin"
 )
@@ -142,7 +141,7 @@ func CreateUser(c *gin.Context) {
 	}
 
 	address := data.NormalizeEmail(request.Email)
-	if !magiclink.ValidAddress(address) {
+	if !data.ValidAddress(address) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "that doesn't look like an email address"})
 		return
 	}
