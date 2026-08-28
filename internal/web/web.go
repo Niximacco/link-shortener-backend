@@ -24,7 +24,6 @@ var templateFS embed.FS
 const (
 	LoginPage     = "login.html"
 	SentPage      = "sent.html"
-	ConfirmPage   = "confirm.html"
 	DashboardPage = "dashboard.html"
 	MessagePage   = "message.html"
 	UsersPage     = "users.html"
@@ -91,7 +90,7 @@ func hex(color string) template.CSS {
 }
 
 func init() {
-	for _, page := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage, UsersPage, TagsPage} {
+	for _, page := range []string{LoginPage, SentPage, DashboardPage, MessagePage, UsersPage, TagsPage} {
 		tmpl := template.New(page).Funcs(funcs)
 		pages[page] = template.Must(tmpl.ParseFS(templateFS, "templates/base.html", "templates/"+page))
 	}
@@ -105,7 +104,6 @@ type Page struct {
 	BaseURL        string
 	Email          string
 	Next           string
-	Token          string
 	Error          string
 	Message        string
 	ExpiresMinutes int

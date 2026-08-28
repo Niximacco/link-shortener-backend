@@ -1,9 +1,10 @@
 module github.com/anthonynixon/link-shortener-backend
 
-go 1.20
+go 1.25.0
 
 require (
 	cloud.google.com/go/datastore v1.10.0
+	github.com/Niximacco/ajn_auth v0.1.0
 	github.com/gin-gonic/gin v1.9.0
 	github.com/golang-jwt/jwt/v5 v5.2.1
 )

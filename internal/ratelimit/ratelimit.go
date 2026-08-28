@@ -16,8 +16,8 @@ import (
 // with several instances up, the real ceiling is this limit times the instance
 // count. That is acceptable for what this is, a brake on cheap floods from a
 // single source. It is deliberately not what protects the email budget - the
-// per address caps in magiclink do that, and they live in datastore and so
-// apply across every instance.
+// per address caps at auth.ajn.me do that, on the side of the wire where the
+// Resend bill lands and across every site that shares it.
 type Limiter struct {
 	mutex   sync.Mutex
 	buckets map[string]*bucket

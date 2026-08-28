@@ -12,22 +12,37 @@ A simple link shortening backend using google cloud datastore key/values for a f
 Sign in is passwordless: an allow-listed email address requests a magic link, clicking it starts a
 session, and the session cookie slides forward every time you come back.
 
+The link itself comes from [ajn_auth](https://github.com/Niximacco/ajn_auth), the shared service at
+`auth.ajn.me`. Minting the token, mailing it, hosting the "yes, it was me" page and the per-address
+send caps used to live in this repository, byte-identical to the copies in three other sites. What
+stays here is the half a shared service cannot hold: **who may sign in**. The user list, the session
+cookie and its signing key are ours, and the service is asked nothing but "did this person prove
+they can read that address".
+
 ## How authentication works
 
 1. `GET /login` serves the sign in page. It's rendered by this service - the html is embedded in the
    binary, so there is nothing else to deploy or keep in sync.
 2. `POST /login` looks the address up in the `user` kind. Unknown or disabled addresses get exactly
-   the same "check your email" response as real ones, so the form can't be used to find out who has
-   an account.
-3. A 32 byte token is generated. Only its SHA-256 hash is written to datastore (kind `magic_link`),
-   so the token itself exists only in the email. Links last **15 minutes** and work **once**.
-4. Resend delivers the email. The link points at `GET /auth/callback`, which renders a confirm
-   button rather than signing you in outright - mail scanners and link previewers fetch urls out of
-   email, and a bare GET would let them burn the token before you ever clicked it.
-5. `POST /auth/callback` spends the token, signs a HS512 JWT and sets it as an http-only,
-   `SameSite=Lax`, Secure cookie good for **30 days**.
+   the same "check your email" response as real ones, and no call is made, so the form can't be used
+   to find out who has an account and a stranger's address never costs an email.
+3. For an address that is on the list, this service asks `auth.ajn.me` to mail a link. The token
+   behind it is minted and stored there, never here. Links last **15 minutes** and work **once**.
+4. The link points at the service's own confirm page rather than at anything here - a button rather
+   than a bare GET, because mail scanners and link previewers fetch urls out of email and would
+   otherwise burn the token before you ever clicked it. Pressing it spends the token and redirects
+   the browser to `GET /auth/callback` here, carrying a single-use exchange code good for two
+   minutes.
+5. `GET /auth/callback` trades that code for the address behind it, checks the `user` kind **again**
+   - a link can sit in an inbox for fifteen minutes and an account can be removed in fourteen of
+   them - then signs a HS512 JWT and sets it as an http-only, `SameSite=Lax`, Secure cookie good for
+   **30 days**.
 6. Any authenticated request re-issues that cookie once it is more than an hour old, so an active
    user is never signed out. Someone who stays away for 30 days is.
+
+The address never travels in the redirect. What crosses the front channel is the code, which is
+worthless in an access log, in browser history and in a `Referer` header a moment later, and
+worthless to anybody without this site's api key at any time.
 
 The API also still accepts `Authorization: bearer <token>` for scripts.
 
@@ -43,20 +58,15 @@ Four limits stack up:
 
 | Limit                        | Scope              | Where it lives              |
 |------------------------------|--------------------|-----------------------------|
-| One link per **60 seconds**  | Per email address  | `LastLinkSent` in datastore |
-| **5** links per hour         | Per email address  | `RecentLinkSents` in datastore |
-| **15** links per day         | Per email address  | `RecentLinkSents` in datastore |
+| One link per **60 seconds**  | Per email address  | At `auth.ajn.me`            |
+| **5** links per hour         | Per email address  | At `auth.ajn.me`            |
+| **15** links per day         | Per email address  | At `auth.ajn.me`            |
 | **10** posts per minute to `/login`, **20** to `/auth/callback` | Per client address | In memory, per instance |
 
-The per address caps are the ones that bound the email bill: whatever happens, this service cannot
-send more than `users x 15` login emails in a day. They are counted from datastore, so they hold
-across every running instance. Being capped returns the same page as a link going out, so the form
-still cannot be used to work out which addresses are real.
-
-The per address caps have one gap worth knowing about: the check reads the user, then the email is
-sent, then the send is recorded. Two requests for the same address arriving at the same instant can
-both pass the check. That is bounded by how many land together rather than by the cap, and the
-sixty second throttle keeps it small, but it is not a hard ceiling.
+The per address caps moved with the sending, to the side of the wire where the Resend bill lands.
+They are counted per site and per address there, so they hold across every running instance of this
+service and every other site that shares the same key. Being capped comes back looking exactly like
+a link going out, so the form still cannot be used to work out which addresses are real.
 
 The per connection limits are a brake on floods, not a promise: they live in memory, so with several
 instances up the real ceiling is the limit times the instance count. They protect datastore reads and
@@ -70,9 +80,8 @@ whose origin cannot be established are **not** limited - see `TRUSTED_PROXY_DEPT
 |---------------------------|-----------|----------------------------------------------------|
 | `GET /`                   | session   | Dashboard: create, list, edit, tag and delete links. `?tag=` filters |
 | `GET /login`              | -         | Sign in form                                        |
-| `POST /login`             | -         | Emails a magic link                                 |
-| `GET /auth/callback`      | -         | Confirm step for an emailed link                    |
-| `POST /auth/callback`     | -         | Spends the token, starts the session                |
+| `POST /login`             | -         | Asks `auth.ajn.me` to email a magic link            |
+| `GET /auth/callback`      | -         | Trades the code the service redirects with, starts the session |
 | `POST /logout`            | -         | Clears the session cookie                           |
 | `GET /api/auth/session`   | session   | `{"email": "..."}` for the current session          |
 | `GET /:short`             | -         | Public redirect, counts a click. Unknown code redirects to `/` |
@@ -189,10 +198,11 @@ front of the site instead of on a JSON body. Lookups that fail for a reason othe
 | `DATASTORE_PROJECT_ID`  | yes      | -                   | Fatal if unset                                            |
 | `DATASTORE_NAMESPACE`   | yes      | -                   | Fatal if unset. Also the JWT audience                     |
 | `JWT_SIGNING_KEY`       | yes      | -                   | Fatal if unset. Rotating it signs everybody out           |
-| `RESEND_API_KEY`        | yes      | -                   | Without it login is disabled and returns 503              |
-| `MAIL_FROM`             | yes      | -                   | e.g. `ajn.me <login@ajn.me>`, on a verified domain        |
-| `APP_BASE_URL`          | yes      | `https://ajn.me`    | Public origin. Magic links are built from it              |
-| `SITE_NAME`             | no       | `ajn.me`            | Name shown on the pages and in the login email            |
+| `AJN_AUTH_URL`          | for login | -                  | The magic link service, `https://auth.ajn.me`             |
+| `AJN_AUTH_API_KEY`      | for login | -                  | This site's key, from the service's admin pages. Without it login is disabled and returns 503 |
+| `AJN_AUTH_REDIRECT_URI` | no       | -                   | Only needed if this site registers more than one callback. Empty uses the first one on the roster |
+| `APP_BASE_URL`          | yes      | `https://ajn.me`    | Public origin. Short links are built from it, and it is what this site is registered under |
+| `SITE_NAME`             | no       | `ajn.me`            | Name shown on the pages                                   |
 | `SESSION_COOKIE_NAME`   | no       | `ls_session`        |                                                           |
 | `COOKIE_DOMAIN`         | no       | empty (host-only)   | Only set this to share the session across subdomains      |
 | `COOKIE_SECURE`         | no       | `true`              | Set `false` only for plain http local development         |
@@ -201,19 +211,39 @@ front of the site instead of on a JSON body. Lookups that fail for a reason othe
 | `TRUSTED_PROXY_DEPTH`   | no       | `0`                 | Proxy hops in front of this service that append to `X-Forwarded-For`. `0` suits a Cloud Run domain mapping; add one per extra load balancer or CDN |
 | `TRUSTED_PROXY_DEBUG`   | no       | unset               | Set to anything to log how each caller's address was resolved, to check the setting above against real traffic |
 
+`RESEND_API_KEY` and `MAIL_FROM` are gone. Nothing here sends mail any more - the login email is the
+only one this service ever sent, and it is sent by `auth.ajn.me` now, from one verified sender on
+one Resend account. Remove both from the Cloud Run service.
+
+### Registering this site with auth.ajn.me
+
+The service will not mail a link on behalf of a site it does not know, and will not deliver an
+exchange code to a url that site did not register. Both live in the roster, edited at
+`https://auth.ajn.me/admin`:
+
+| Field | Value |
+|---|---|
+| Id | `link-shortener` |
+| Name | `ajn.me` |
+| Base url | `https://ajn.me` |
+| Redirect uris | `https://ajn.me/auth/callback`, and `http://localhost:8080/auth/callback` to develop against the deployed service |
+| From | `ajn.me <login@ajn.me>` |
+
+Then generate a key on that page and set it as `AJN_AUTH_API_KEY` here. The plaintext is shown once
+and is not recoverable, so rotating means generating a second, deploying it, and revoking the first.
+
 `TEMP_PASS` is gone. The `POST /token` endpoint it guarded has been removed - it handed out a token
 to anyone who sent a matching `password` header, and when `TEMP_PASS` was unset the empty header
 matched the empty value, so it authenticated everybody. Remove it from the Cloud Run service.
 
 ## Datastore
 
-Four kinds, all in `DATASTORE_NAMESPACE`:
+Three kinds, all in `DATASTORE_NAMESPACE`:
 
 - **`link`** - key name is the upper-cased short code. Carries its labels in a `Tags` string
   property, comma separated.
 - **`user`** - the allow list. Key name is the lower-cased email address. Having an entity is what
   grants access.
-- **`magic_link`** - pending login tokens. Key name is the SHA-256 hash of the emailed token.
 - **`tag`** - a label. Key name is `<lower-cased owner email>:<lower-cased tag name>`, which is what
   makes a tag owned: two people can each have a `work` tag and neither can end up with two of them,
   without a uniqueness query on the way in.
@@ -225,7 +255,7 @@ Four kinds, all in `DATASTORE_NAMESPACE`:
 | `Owner`   | string  | Lower-cased email address. Filtered on              |
 | `Created` | integer | Unix seconds                                        |
 
-The `user`, `magic_link` and `tag` kinds are looked up by key, the link list filters on `CreatedBy`
+The `user` and `tag` kinds are looked up by key, the link list filters on `CreatedBy`
 with no sort order, and the tag list filters on `Owner` with no sort order - datastore sorts
 nothing, the service sorts each page in memory - so **no composite indexes are needed**. Past a few
 thousand links, swap that for a `CreatedBy` + `Created` composite index and let datastore do the
@@ -292,42 +322,42 @@ understands:
 | `Email`        | string  | Informational copy of the address                         |
 | `Created`      | integer | Unix seconds, informational                               |
 | `LastLogin`    | integer | Unix seconds, written on every successful sign in         |
-| `LastLinkSent` | integer | Unix seconds, used to throttle links to one per minute    |
-| `RecentLinkSents` | integer[] | Unix seconds of the links sent in the last day, for the hourly and daily caps. Unindexed |
 | `Admin`        | boolean | `true` lets them see and change every link, not just their own |
 | `Disabled`     | boolean | `true` blocks sign in without deleting the entity         |
+
+Entities written before the move to `auth.ajn.me` also carry `LastLinkSent` and `RecentLinkSents`,
+which were the per-address send caps. Nothing reads them now. They are left where they are: a
+property nobody indexes costs nothing, and a sweep to remove them would.
 
 Extra properties are left alone: logins update one property at a time rather than overwriting the
 entity. To revoke access, delete the entity or set `Disabled` to true - existing sessions keep
 working until the cookie expires unless you also rotate `JWT_SIGNING_KEY`.
 
-### Cleaning up spent tokens
+### The kind that used to be here
 
-`magic_link` entities carry an `Expires` timestamp. Turn on a TTL policy so they sweep themselves:
-
-```bash
-gcloud firestore fields ttls update Expires --collection-group=magic_link --enable-ttl
-```
-
-Nothing breaks without it - spent and expired tokens are already rejected - the kind just grows.
-
-## Resend
-
-1. Verify the sending domain in Resend and add the DNS records it asks for.
-2. Create an API key with send permission, put it in `RESEND_API_KEY`.
-3. Set `MAIL_FROM` to an address on that verified domain.
-
-Email is sent inline during the request. Cloud Run only guarantees cpu while a request is being
-handled, so it must not be moved to a background goroutine.
+`magic_link` held pending login tokens, keyed by the SHA-256 hash of the emailed one. Nothing writes
+or reads it any more - the tokens live at `auth.ajn.me`. Existing entities can be left to the TTL
+policy on `Expires`, if one was ever added, or deleted outright.
 
 ## Local development
 
 ```bash
 export DATASTORE_PROJECT_ID=... DATASTORE_NAMESPACE=... JWT_SIGNING_KEY=dev-key
-export RESEND_API_KEY=... MAIL_FROM='Dev <you@example.com>'
 export APP_BASE_URL=http://localhost:8080 COOKIE_SECURE=false mode=debug
 go run ./cmd/link-shortener-backend
 ```
+
+With no `AJN_AUTH_URL` and `AJN_AUTH_API_KEY` the login form says sign in is unavailable, because
+there is nothing to ask for a link. Signing in locally means pointing at the deployed service with a
+real key and having `http://localhost:8080/auth/callback` on this site's redirect uris - that is the
+one place the service allows plain http, and only for localhost:
+
+```bash
+export AJN_AUTH_URL=https://auth.ajn.me AJN_AUTH_API_KEY=ajnauth_xxx AJN_AUTH_REDIRECT_URI=http://localhost:8080/auth/callback
+```
+
+The link still arrives by email and its confirm page is still on `auth.ajn.me`; only the redirect at
+the end of it comes back to the laptop.
 
 ```bash
 go test ./...

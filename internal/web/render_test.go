@@ -39,7 +39,6 @@ func samplePage(title string) Page {
 	page := New(title)
 	page.Email = "someone@example.com"
 	page.Next = "/link/ABC123"
-	page.Token = "a-token-value"
 	page.Error = "an error happened"
 	page.Message = "a message"
 	page.ExpiresMinutes = 15
@@ -48,7 +47,7 @@ func samplePage(title string) Page {
 }
 
 func TestEveryPageRenders(t *testing.T) {
-	for _, name := range []string{LoginPage, SentPage, ConfirmPage, DashboardPage, MessagePage, UsersPage, TagsPage} {
+	for _, name := range []string{LoginPage, SentPage, DashboardPage, MessagePage, UsersPage, TagsPage} {
 		body := render(t, name, samplePage("A Title"))
 
 		if !strings.Contains(body, "A Title") {
@@ -70,10 +69,6 @@ func TestPagesCarryTheirOwnFields(t *testing.T) {
 
 	if body := render(t, SentPage, page); !strings.Contains(body, "15 minutes") {
 		t.Error("sent page dropped the expiry")
-	}
-
-	if body := render(t, ConfirmPage, page); !strings.Contains(body, `value="a-token-value"`) {
-		t.Error("confirm page dropped the token")
 	}
 
 	if body := render(t, DashboardPage, page); !strings.Contains(body, "someone@example.com") {
