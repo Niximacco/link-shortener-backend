@@ -228,6 +228,7 @@ exchange code to a url that site did not register. Both live in the roster, edit
 | Base url | `https://ajn.me` |
 | Redirect uris | `https://ajn.me/auth/callback`, and `http://localhost:8080/auth/callback` to develop against the deployed service |
 | From | `ajn.me <login@ajn.me>` |
+| Accent | Leave it empty. The default near-black is `#1d1d1f`, which is already this site's own `--accent` |
 
 Then generate a key on that page and set it as `AJN_AUTH_API_KEY` here. The plaintext is shown once
 and is not recoverable, so rotating means generating a second, deploying it, and revoking the first.
