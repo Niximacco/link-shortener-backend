@@ -549,3 +549,31 @@ func TestTagsPageEscapesTagNames(t *testing.T) {
 		t.Error("a tag name escaped into markup")
 	}
 }
+
+// The "check your email" page is where the code from the email is typed, and
+// it comes back with an error on it when the code was wrong.
+func TestTheSentPageTakesTheCodeFromTheEmail(t *testing.T) {
+	page := New("Check your email")
+	page.Email = "someone@example.com"
+	page.Next = "/somewhere"
+	page.ExpiresMinutes = 15
+	page.Error = "That code didn't work."
+
+	body := render(t, SentPage, page)
+
+	// The address and the next path have to ride along in the form, or the code
+	// arrives at the handler with nothing to check it against and nowhere to go.
+	for _, want := range []string{
+		`action="/login/code"`,
+		`name="code"`,
+		`autocomplete="one-time-code"`,
+		`value="someone@example.com"`,
+		`value="/somewhere"`,
+		"That code didn",
+		"15 minutes",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the sent page is missing %q", want)
+		}
+	}
+}

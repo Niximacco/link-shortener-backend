@@ -41,6 +41,7 @@ const LINK_VALID_MINUTES = 15
 var (
 	loginLimiter    = ratelimit.New(10, time.Minute)
 	callbackLimiter = ratelimit.New(20, time.Minute)
+	codeLimiter     = ratelimit.New(10, time.Minute)
 )
 
 func AddAuthV1(router *gin.Engine) {
@@ -57,6 +58,7 @@ func AddAuthV1(router *gin.Engine) {
 	router.GET("/login", auth.Optional(), LoginPage)
 	router.POST("/login", loginLimiter.Middleware(web.TooManyRequests(time.Minute)), auth.Optional(), RequestMagicLink)
 	router.GET("/auth/callback", callbackLimiter.Middleware(web.TooManyRequests(time.Minute)), CompleteLogin)
+	router.POST("/login/code", codeLimiter.Middleware(web.TooManyRequests(time.Minute)), CompleteLoginByCode)
 	router.POST("/logout", Logout)
 
 	router.GET("/api/auth/session", auth.Required(), Session)
@@ -204,11 +206,51 @@ func CompleteLogin(c *gin.Context) {
 		return
 	}
 
-	// Ask the user list again. The link this code came from can sit in an inbox
-	// for a quarter of an hour, and an account can be removed in fourteen
+	finishLogin(c, identity)
+}
+
+// CompleteLoginByCode is the typed alternative to the link: the six digit code
+// from the same email, entered on the "check your email" page. It is for
+// somebody reading their mail on a phone and signing in on a laptop.
+//
+// The address comes from a hidden field, so it is the visitor's to change -
+// which is fine, because a code only works for the address it was mailed to.
+// Guesses are counted and capped by the service, not here.
+func CompleteLoginByCode(c *gin.Context) {
+	address := data.NormalizeEmail(c.PostForm("email"))
+
+	identity, err := login.VerifyCode(c, address, c.PostForm("code"))
+	if err != nil {
+		if errors.Is(err, authclient.ErrBadCode) {
+			// Back to the same page, with the form still on it. A typo is the
+			// ordinary case, and the address has to survive for the retry.
+			page := web.New("Check your email")
+			page.Email = address
+			page.Next = web.SafeNext(c.PostForm("next"))
+			page.ExpiresMinutes = LINK_VALID_MINUTES
+			page.Error = "That code didn't work. Check it and try again, or ask for a new email."
+			web.Render(c, http.StatusUnauthorized, web.SentPage, page)
+			return
+		}
+
+		log.Printf("could not verify a login code: %s", err.Error())
+		page := web.New("Sign in unavailable")
+		page.Error = "Something went wrong signing you in. Please try again."
+		web.Render(c, http.StatusServiceUnavailable, web.MessagePage, page)
+		return
+	}
+
+	finishLogin(c, identity)
+}
+
+// finishLogin is where both ways in end: the user list again, a session, and
+// the redirect.
+func finishLogin(c *gin.Context, identity authclient.Identity) {
+	// Ask the user list again. The email this login came from can sit in an
+	// inbox for a quarter of an hour, and an account can be removed in fourteen
 	// minutes of that.
 	address := data.NormalizeEmail(identity.Email)
-	if _, err = data.GetUser(address); err != nil {
+	if _, err := data.GetUser(address); err != nil {
 		page := web.New("That account can no longer sign in")
 
 		if errors.Is(err, data.UserNotFoundErr) || errors.Is(err, data.UserDisabledErr) {
@@ -224,7 +266,7 @@ func CompleteLogin(c *gin.Context) {
 		return
 	}
 
-	if err = auth.StartSession(c, address); err != nil {
+	if err := auth.StartSession(c, address); err != nil {
 		log.Printf("could not issue session token: %s", err.Error())
 		page := web.New("Something went wrong")
 		page.Error = "We couldn't start your session. Please try again."
@@ -234,7 +276,7 @@ func CompleteLogin(c *gin.Context) {
 
 	// The sign in already happened; a failure to write it down is not worth
 	// turning anybody away for.
-	if err = data.MarkLoggedIn(address, time.Now()); err != nil {
+	if err := data.MarkLoggedIn(address, time.Now()); err != nil {
 		log.Printf("could not record login time: %s", err.Error())
 	}
 
