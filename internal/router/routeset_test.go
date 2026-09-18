@@ -35,6 +35,7 @@ func TestTheWholeRouteSetRegistersAndResolves(t *testing.T) {
 	r.GET("/login", mark("login"))
 	r.POST("/login", mark("request"))
 	r.GET("/auth/callback", mark("complete"))
+	r.POST("/login/code", mark("code"))
 	r.POST("/logout", mark("logout"))
 	r.GET("/api/auth/session", mark("session"))
 

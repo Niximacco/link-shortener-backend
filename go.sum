@@ -10,8 +10,8 @@ cloud.google.com/go/datastore v1.10.0/go.mod h1:PC5UzAmDEkAmkfaknstTYbNpgE49HAgW
 cloud.google.com/go/longrunning v0.3.0 h1:NjljC+FYPV3uh5/OwWT6pVU+doBqMg2x/rZlE+CamDs=
 cloud.google.com/go/longrunning v0.3.0/go.mod h1:qth9Y41RRSUE69rDcOn6DdK3HfQfsUI0YSmW3iIlLJc=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/Niximacco/ajn_auth v0.1.0 h1:jIM8HfK+bJLM75c2AX4csX5ybu+prlHDmqqKSW+DTPs=
-github.com/Niximacco/ajn_auth v0.1.0/go.mod h1:t+Ra+pjg2mBTLx4YtFos9Kp5IJp/kVjDEucmyMuBYhY=
+github.com/Niximacco/ajn_auth v0.2.0 h1:JLINDaKh0azy3r3rrKlsDaXecGqKuXVDeJ1gulvl6eQ=
+github.com/Niximacco/ajn_auth v0.2.0/go.mod h1:t+Ra+pjg2mBTLx4YtFos9Kp5IJp/kVjDEucmyMuBYhY=
 github.com/bytedance/sonic v1.5.0/go.mod h1:ED5hyg4y6t3/9Ku1R6dU/4KyJ48DZ4jPhfY1O2AihPM=
 github.com/bytedance/sonic v1.8.0 h1:ea0Xadu+sHlu7x5O3gKhRpQ1IKiMrSiHttPF0ybECuA=
 github.com/bytedance/sonic v1.8.0/go.mod h1:i736AoUSYt75HyZLoJW9ERYxcy6eaN6h4BZXU064P/U=
