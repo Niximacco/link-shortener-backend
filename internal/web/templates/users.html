@@ -65,7 +65,7 @@
     <p class="empty">Nobody can sign in yet.</p>
   {{end}}
 
-  <p class="muted-small">Disabling blocks sign in and ends any session they already have, without losing their history. Deleting a user outright still means removing their <code>user</code> entity in the datastore console.</p>
+  <p class="muted-small">Disabling blocks sign in and ends any session they already have, without losing their history. Deleting a user outright still means removing their row from the <code>users</code> table by hand.</p>
 
   <div class="row">
     <span class="who">Signed in as {{.Email}}{{if .IsAdmin}} &middot; admin{{end}}</span>
