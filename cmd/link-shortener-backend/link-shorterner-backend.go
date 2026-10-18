@@ -10,6 +10,7 @@ import (
 	"github.com/anthonynixon/link-shortener-backend/internal/router"
 	"github.com/gin-gonic/gin"
 	"log"
+	"net/http"
 	"os"
 )
 
@@ -29,6 +30,13 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 	router := router.New()
+
+	// The host checks this to tell whether the service is up, and a deploy
+	// waits for it before it takes the previous build away. It takes no
+	// session: the dashboard probing it is not signed in to anything.
+	router.GET("/healthz", func(c *gin.Context) {
+		c.String(http.StatusOK, "ok")
+	})
 
 	// Add Routes
 	link.AddLinkV1(router)

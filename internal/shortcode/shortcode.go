@@ -37,17 +37,18 @@ func New(opts ...Option) string {
 // reserved are the paths the service serves itself. A short code matching one
 // would be shadowed by that route and unreachable, so they can't be claimed.
 var reserved = map[string]bool{
-	"link":   true,
-	"links":  true,
-	"user":   true,
-	"users":  true,
-	"tag":    true,
-	"tags":   true,
-	"login":  true,
-	"logout": true,
-	"auth":   true,
-	"api":    true,
-	"static": true,
+	"link":    true,
+	"links":   true,
+	"user":    true,
+	"users":   true,
+	"tag":     true,
+	"tags":    true,
+	"login":   true,
+	"logout":  true,
+	"auth":    true,
+	"api":     true,
+	"static":  true,
+	"healthz": true,
 }
 
 const max_len = 64

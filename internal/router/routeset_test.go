@@ -22,6 +22,9 @@ func TestTheWholeRouteSetRegistersAndResolves(t *testing.T) {
 
 	r := New()
 
+	// main registers the health check before the route sets, as it does here.
+	r.GET("/healthz", mark("health"))
+
 	// link.AddLinkV1
 	r.GET("/:short", mark("redirect"))
 	r.GET("/links", mark("links"))
@@ -66,6 +69,8 @@ func TestTheWholeRouteSetRegistersAndResolves(t *testing.T) {
 		// And a short code that looks like one must still redirect.
 		{http.MethodGet, "/TAGS", "redirect"},
 		{http.MethodGet, "/ABC123", "redirect"},
+		// The health check the host probes has to win over the catch-all too.
+		{http.MethodGet, "/healthz", "health"},
 		{http.MethodGet, "/users", "users"},
 		{http.MethodGet, "/api/auth/session", "session"},
 		{http.MethodGet, "/", "dashboard"},
