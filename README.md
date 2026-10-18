@@ -337,7 +337,9 @@ cookie expires unless you also rotate `JWT_SIGNING_KEY`.
 ### What used to be in datastore
 
 `magic_link` held pending login tokens, keyed by the SHA-256 hash of the emailed one. The tokens
-live at `auth.ajn.me` now, and that kind was already dead before the move, so it got no table.
+live at `auth.ajn.me` now, and that kind was already dead before the move, so it got no table. It
+is named in `ignore_kinds`, which is how the import was told to leave its entities where they are
+rather than refusing to run.
 
 The `link`, `user` and `tag` kinds in namespace `links.ajn.me` are what the tables were imported
 from, through the `datastore` mapping in `pillar.json`. They are only ever read, which is what
