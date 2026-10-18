@@ -81,7 +81,8 @@
             "columns": {"Created": "created", "LastLogin": "last_login", "Admin": "admin", "Disabled": "disabled"},
             "ignore": ["Email", "LastLinkSent", "RecentLinkSents"]
           }
-        }
+        },
+        "ignore_kinds": ["magic_link"]
       }
     }
   }
