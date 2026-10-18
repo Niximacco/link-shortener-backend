@@ -19,10 +19,10 @@
 #    needs roles/artifactregistry.writer to push, and has to be one of the
 #    DEPLOYERS the host accepts in order to deploy.
 #
-# 3. Everything about how the service runs - its environment, its secrets, the
-#    domains in front of it, its memory limit and the permissions it runs with -
-#    is in Niximacco/pillar-of-autumn (host/compose.yaml, host/secrets.json,
-#    host/Caddyfile and terraform/), under the name in SERVICE below.
+# 3. How the service runs - its environment, its secrets (by name), the domains
+#    in front of it, its memory limit and its database's tables - is in
+#    pillar.json at the top of this repository, and every deploy sends it. The
+#    permissions it runs with are in Niximacco/pillar-of-autumn's terraform/.
 
 name: Build and Deploy
 
@@ -111,10 +111,15 @@ jobs:
       # it to report healthy. If it does not, the previous build goes back and
       # this step fails - a broken build is a red check on the commit that broke
       # it, with the site still up on the one before.
+      #
+      # pillar.json goes with it, with the commit added as the tag, so what the
+      # host runs - its environment, its domains, its tables - is what this
+      # commit says.
       - name: Deploy to pillar-of-autumn
         run: |-
-          curl --fail-with-body --silent --show-error --max-time 300 \
-            -X POST https://ops.ajn.me/api/deploy \
-            -H "Authorization: Bearer ${{ steps.deploy-token.outputs.id_token }}" \
-            -H "Content-Type: application/json" \
-            -d '{"service": "${{ env.SERVICE }}", "tag": "${{ github.sha }}"}'
+          jq --arg tag "${{ github.sha }}" '. + {tag: $tag}' pillar.json |
+            curl --fail-with-body --silent --show-error --max-time 300 \
+              -X POST https://ops.ajn.me/api/deploy \
+              -H "Authorization: Bearer ${{ steps.deploy-token.outputs.id_token }}" \
+              -H "Content-Type: application/json" \
+              --data-binary @-

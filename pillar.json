@@ -1,0 +1,88 @@
+{
+  "service": "link-shortener-backend",
+  "workload": {
+    "image": "us-central1-docker.pkg.dev/ajnhosting-163818/link-shortener-backend/link-shortener-backend",
+    "repo": "Niximacco/link-shortener-backend",
+    "port": 8080,
+    "domains": [
+      "ajn.me"
+    ],
+    "dns": true,
+    "health_path": "/healthz",
+    "memory_mib": 128,
+    "env": {
+      "DATASTORE_PROJECT_ID": "ajnhosting-163818",
+      "FONTAWESOME_KIT": "df88468b70",
+      "AJN_AUTH_URL": "https://auth.ajn.me",
+      "DATASTORE_NAMESPACE": "links.ajn.me",
+      "MAIL_FROM": "ajn.me <login@ajn.me>",
+      "APP_BASE_URL": "https://ajn.me",
+      "GOMEMLIMIT": "100MiB"
+    },
+    "secrets": {
+      "JWT_SIGNING_KEY": "jwt_signing_key",
+      "RESEND_API_KEY": "link_shortener_resend_api_key",
+      "AJN_AUTH_API_KEY": "link_shortener_ajn_auth_api_key"
+    },
+    "database": {
+      "tables": {
+        "links": {
+          "columns": [
+            {"name": "short", "type": "text", "not_null": true},
+            {"name": "long", "type": "text", "not_null": true, "default": ""},
+            {"name": "created", "type": "integer", "not_null": true, "default": 0},
+            {"name": "created_by", "type": "text", "not_null": true, "default": ""},
+            {"name": "clicks", "type": "integer", "not_null": true, "default": 0},
+            {"name": "tags", "type": "text", "not_null": true, "default": ""}
+          ],
+          "primary_key": ["short"],
+          "indexes": {
+            "links_by_created_by": {"columns": ["created_by", "created"]}
+          }
+        },
+        "tags": {
+          "columns": [
+            {"name": "id", "type": "text", "not_null": true},
+            {"name": "owner", "type": "text", "not_null": true, "default": ""},
+            {"name": "name", "type": "text", "not_null": true, "default": ""},
+            {"name": "color", "type": "text", "not_null": true, "default": ""},
+            {"name": "created", "type": "integer", "not_null": true, "default": 0}
+          ],
+          "primary_key": ["id"],
+          "indexes": {
+            "tags_by_owner": {"columns": ["owner", "name"]}
+          }
+        },
+        "users": {
+          "columns": [
+            {"name": "email", "type": "text", "not_null": true},
+            {"name": "created", "type": "integer", "not_null": true, "default": 0},
+            {"name": "last_login", "type": "integer", "not_null": true, "default": 0},
+            {"name": "admin", "type": "integer", "not_null": true, "default": 0},
+            {"name": "disabled", "type": "integer", "not_null": true, "default": 0}
+          ],
+          "primary_key": ["email"]
+        }
+      },
+      "datastore": {
+        "namespace": "links.ajn.me",
+        "kinds": {
+          "link": {
+            "table": "links", "key": "short",
+            "columns": {"Long": "long", "Created": "created", "CreatedBy": "created_by", "Clicks": "clicks", "Tags": "tags"},
+            "ignore": ["Short"]
+          },
+          "tag": {
+            "table": "tags", "key": "id",
+            "columns": {"Owner": "owner", "Name": "name", "Color": "color", "Created": "created"}
+          },
+          "user": {
+            "table": "users", "key": "email",
+            "columns": {"Created": "created", "LastLogin": "last_login", "Admin": "admin", "Disabled": "disabled"},
+            "ignore": ["Email", "LastLinkSent", "RecentLinkSents"]
+          }
+        }
+      }
+    }
+  }
+}
