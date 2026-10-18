@@ -524,6 +524,29 @@ func TestEnsureTagsMakesOnlyWhatIsMissing(t *testing.T) {
 	}
 }
 
+func TestHealthyFollowsTheDatabase(t *testing.T) {
+	useTestDatabase(t)
+
+	if err := Healthy(); err != nil {
+		t.Fatalf("an open database is not healthy: %v", err)
+	}
+
+	// A container whose database has gone away under it still serves the route,
+	// so this is the difference between a deploy that fails and a broken build
+	// that stays up reporting "ok".
+	opened := db
+	db = nil
+	if err := Healthy(); err == nil {
+		t.Error("a database that was never opened reported healthy")
+	}
+
+	db = opened
+	db.Close()
+	if err := Healthy(); err == nil {
+		t.Error("a closed database reported healthy")
+	}
+}
+
 func codes(links []types.Link) string {
 	short := make([]string, 0, len(links))
 	for _, link := range links {
