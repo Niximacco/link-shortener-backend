@@ -11,8 +11,8 @@ type Link struct {
 	CreatedBy string `json:"created_by"`
 	Clicks    int    `json:"clicks"`
 	// Tags is the link's labels as one comma separated string, which is how the
-	// property is stored: a link's whole labelling arrives with the entity, and
-	// there is no repeated property costing an index row per tag.
+	// column is stored: a link's whole labelling arrives with the row, and
+	// there is no second table to read per link.
 	Tags string `json:"tags"`
 }
 
@@ -22,9 +22,10 @@ func (l Link) TagNames() []string {
 	return tags.Parse(l.Tags)
 }
 
-// Tag is a label in the "tag" kind, owned by the user who made it. The datastore
-// key name is "<owner email>:<lower-cased name>", so two people can each have a
-// tag called "work" and neither can have two of them.
+// Tag is a label in the tags table, owned by the user who made it. Its primary
+// key is "<owner email>:<lower-cased name>", which is what its datastore key
+// was, so two people can each have a tag called "work" and neither can have two
+// of them.
 //
 // Links carry tags by name rather than by key. Renaming or deleting a tag is
 // carried through to its owner's links at that point.
@@ -35,18 +36,19 @@ type Tag struct {
 	Created int64  `json:"created"`
 }
 
-// User is an entity in the "user" kind. Presence of an entity is what grants
-// access: if there is no user for an email address, auth.ajn.me is never asked
-// for a link. The datastore key name is the lower-cased email address.
+// User is a row in the users table. Presence of a row is what grants access: if
+// there is no user for an email address, auth.ajn.me is never asked for a link.
+// The primary key is the lower-cased email address.
 type User struct {
 	Email     string `json:"email"`
 	Created   int64  `json:"created"`
 	LastLogin int64  `json:"last_login"`
-	// Entities written before auth.ajn.me existed also carry LastLinkSent and
+	// Entities written before auth.ajn.me existed also carried LastLinkSent and
 	// RecentLinkSents, which were the per-address magic link send caps. Those
-	// caps belong to the service now and nothing here reads the properties;
-	// they are left on the entities rather than swept, because a property
-	// nobody indexes costs nothing and a migration to delete them would.
+	// caps belong to the service now and nothing here read them, so the move
+	// off datastore gave them no columns: they are the `ignore` list under the
+	// user kind in pillar.json, which is how the import was told to leave them
+	// behind rather than refusing to run.
 	// Admin lets this user see and change every link, not just their own.
 	Admin bool `json:"admin"`
 	// Disabled keeps the entity around for history while blocking logins.

@@ -7,7 +7,7 @@
 | `DELETE /tags/:name`      | session   | Deletes a tag and takes it off your links           |
 # link-shortener-backend
 
-A simple link shortening backend using google cloud datastore key/values for a fast and affordable service.
+A simple link shortening backend. Its data is a SQLite database of its own on the pillar-of-autumn host: one file, its tables declared in `pillar.json` and made by the deploy.
 
 Sign in is passwordless: an allow-listed email address requests a magic link, clicking it starts a
 session, and the session cookie slides forward every time you come back.
@@ -51,7 +51,7 @@ The API also still accepts `Authorization: bearer <token>` for scripts.
 There is no captcha, because the thing a captcha would guard is already shut. `POST /login` only
 mails an address that is in the `user` kind, and that check happens *before* anything is sent, so a
 bot working through guessed addresses gets the same "check your email" page as everybody else and
-costs nothing but a datastore read. Nothing is emailed to a stranger, ever.
+costs nothing but one indexed read. Nothing is emailed to a stranger, ever.
 
 What is left to bound is a caller who knows, or guesses, an address that really is on the list.
 Four limits stack up:
@@ -69,7 +69,7 @@ service and every other site that shares the same key. Being capped comes back l
 a link going out, so the form still cannot be used to work out which addresses are real.
 
 The per connection limits are a brake on floods, not a promise: they live in memory, so with several
-instances up the real ceiling is the limit times the instance count. They protect datastore reads and
+instances up the real ceiling is the limit times the instance count. They protect database reads and
 instance time rather than the email budget. A caller over one gets a 429 with `Retry-After`. Requests
 whose origin cannot be established are **not** limited - see `TRUSTED_PROXY_DEPTH` above, and
 `internal/ratelimit` for why guessing at an identity is worse than not having one.
@@ -120,7 +120,7 @@ Asking to change a link that exists but belongs to somebody else returns **404, 
 normal user - confirming that a code exists but is not yours is more than the answer needs to give
 away. Admins get a real 403, since they can already see everything.
 
-Ownership is checked **inside** the datastore transaction that does the write, so it cannot be
+Ownership is checked **inside** the SQL transaction that does the write, so it cannot be
 raced: a link cannot change hands between the check and the update.
 
 Two consequences worth knowing:
@@ -133,7 +133,7 @@ Two consequences worth knowing:
 
 ### Renaming a link
 
-`PATCH` accepts a new `short`, which moves the entity, because the short code *is* the datastore
+`PATCH` accepts a new `short`, which moves the row, because the short code *is* the primary
 key. Clicks and the original creation details come along. The old code stops resolving immediately,
 so anything already sharing it gets a 404 - that is inherent to renaming, not a bug to work around.
 
@@ -150,15 +150,15 @@ with the entity, and there is no index row per tag to pay for.
 - Names are compared **case insensitively** and with runs of whitespace collapsed, so `Work` and
   `work` are the same tag. The casing you created it with is the casing that gets shown.
 - Up to **10 tags per link**, each up to **32 characters**. Commas, slashes and control characters
-  are rejected - a comma is the separator, and the name ends up in a url path and a datastore key.
+  are rejected - a comma is the separator, and the name ends up in a url path and a database key.
 - Typing a tag onto a link **creates it** if you don't have it yet, with a colour picked from the
   palette that you aren't already using. You never have to visit the tags page first.
 - Renaming a tag rewrites the name on every link of yours carrying it. Deleting one takes it off
   those links and leaves the links otherwise alone.
 
 Filter by tag with **`?tag=work`** on the dashboard or on `GET /links`, or by clicking a pill. The
-filter is applied in memory after the list comes back, for the same reason the list is sorted there:
-a datastore filter on tags alongside the `CreatedBy` one would need a composite index.
+filter is applied in memory after the list comes back, because a link's tags are one comma
+separated column rather than a table of their own, and the page is already capped by the list limit.
 
 An **admin** looking at everybody's links still sees their own tag list in the filters, because tags
 are a private filing system rather than part of the service's state. A link carrying somebody else's
@@ -175,15 +175,13 @@ Two limits worth knowing, both inherited from `LINK_LIST_LIMIT`:
 
 ## Redirects and click counts
 
-`GET /:short` counts the click **before** it writes the redirect, inside a datastore
-transaction that re-reads the entity. It used to fire a goroutine after responding, which
+`GET /:short` counts the click **before** it writes the redirect, with a single
+`UPDATE` that adds to the number in the row. It used to fire a goroutine after responding, which
 loses counts two ways on Cloud Run: the container's cpu is throttled the moment the response
-goes out, so the goroutine is often frozen before it reaches datastore, and it incremented a
-copy of the link read outside the transaction, so simultaneous clicks overwrote each other.
-
-The cost is one datastore round trip on the redirect path. If that ever matters more than
-exact counts, the alternative is enabling always-on cpu for the service rather than going
-back to a goroutine.
+goes out, so the goroutine is often frozen before it reaches the database, and it incremented a
+copy of the link read a moment earlier, so simultaneous clicks overwrote each other. One
+statement can do neither. The cost is one write to a file in this container, which is cheap
+enough that the goroutine it replaced was never buying anything worth the counts it lost.
 
 An unknown short code is not an error page. Any failure to look the code up - most often a
 code that was never created - answers with a 302 to `/`, which is the dashboard when you are
@@ -195,8 +193,8 @@ front of the site instead of on a JSON body. Lookups that fail for a reason othe
 
 | Variable                | Required | Default             | Notes                                                    |
 |-------------------------|----------|---------------------|----------------------------------------------------------|
-| `DATASTORE_PROJECT_ID`  | yes      | -                   | Fatal if unset                                            |
-| `DATASTORE_NAMESPACE`   | yes      | -                   | Fatal if unset. Also the JWT audience                     |
+| `DATABASE_PATH`         | yes      | -                   | The SQLite file. Set by the deploy, which makes the file and its tables before the container starts. Fatal if unset |
+| `DATASTORE_NAMESPACE`   | yes      | -                   | **The session token audience, and nothing else** - there is no datastore any more. Fatal if unset. Still called this because the value, `links.ajn.me`, is what this site is registered under at auth.ajn.me |
 | `JWT_SIGNING_KEY`       | yes      | -                   | Fatal if unset. Rotating it signs everybody out           |
 | `AJN_AUTH_URL`          | for login | -                  | The magic link service, `https://auth.ajn.me`             |
 | `AJN_AUTH_API_KEY`      | for login | -                  | This site's key, from the service's admin pages. Without it login is disabled and returns 503 |
@@ -237,34 +235,37 @@ and is not recoverable, so rotating means generating a second, deploying it, and
 to anyone who sent a matching `password` header, and when `TEMP_PASS` was unset the empty header
 matched the empty value, so it authenticated everybody. Remove it from the Cloud Run service.
 
-## Datastore
+## The database
 
-Three kinds, all in `DATASTORE_NAMESPACE`:
+One SQLite file, at `DATABASE_PATH`. There is no database server: SQLite is a library in this
+service's own process, so the database costs nothing while nobody is using it and no memory but
+this service's. The deploy makes the file and its tables, from the `database` block in
+`pillar.json`, before the container starts - nothing here runs a migration, and `Open` refuses a
+file that is missing a table rather than failing one page at a time.
 
-- **`link`** - key name is the upper-cased short code. Carries its labels in a `Tags` string
-  property, comma separated.
-- **`user`** - the allow list. Key name is the lower-cased email address. Having an entity is what
+Three tables:
+
+- **`links`** - primary key is the upper-cased short code, which is how a code is case
+  insensitive. Carries its labels in a `tags` text column, comma separated. Indexed on
+  `(created_by, created)`, which is the dashboard's query.
+- **`users`** - the allow list. Primary key is the lower-cased email address. Having a row is what
   grants access.
-- **`tag`** - a label. Key name is `<lower-cased owner email>:<lower-cased tag name>`, which is what
-  makes a tag owned: two people can each have a `work` tag and neither can end up with two of them,
-  without a uniqueness query on the way in.
+- **`tags`** - a label. Primary key is `<lower-cased owner email>:<lower-cased tag name>`, which
+  is what makes a tag owned: two people can each have a `work` tag and neither can end up with two
+  of them, without a uniqueness query on the way in. `owner` is a column of its own as well, and
+  indexed, because that is what the tag list filters on.
 
-| Property  | Type    | Notes                                              |
-|-----------|---------|----------------------------------------------------|
-| `Name`    | string  | As displayed, in the casing it was created with     |
-| `Color`   | string  | `#rrggbb`. Anything else is read as the default grey |
-| `Owner`   | string  | Lower-cased email address. Filtered on              |
-| `Created` | integer | Unix seconds                                        |
+Every table is `STRICT`, so a value of the wrong type is an error rather than a surprise. The
+flags - `admin`, `disabled` - are integer columns holding 0 or 1.
 
-The `user` and `tag` kinds are looked up by key, the link list filters on `CreatedBy`
-with no sort order, and the tag list filters on `Owner` with no sort order - datastore sorts
-nothing, the service sorts each page in memory - so **no composite indexes are needed**. Past a few
-thousand links, swap that for a `CreatedBy` + `Created` composite index and let datastore do the
-ordering.
+`color` is checked on the way out, not just on the way in: it ends up in a `style` attribute and in
+the json the dashboard builds its pills from, so a value that isn't a hex colour is read as the
+default grey rather than reaching the page.
 
-`Color` is checked on the way out of datastore, not just on the way in: it ends up in a `style`
-attribute and in the json the dashboard builds its pills from, so a value edited by hand in the
-console into something that isn't a hex colour is read as the default rather than reaching the page.
+The tests run against a real database. Each opens a temporary file with the tables built from
+`pillar.json` itself, so a column this service reads that the file does not declare fails a test
+rather than a deploy. On datastore none of this could be tested without the emulator, so none of
+it was.
 
 ### Allowing someone to sign in
 
@@ -274,7 +275,7 @@ it has the form for adding somebody. Tick the box to make them an admin too. Not
 tell them to visit `/login` and request a link themselves.
 
 Both routes are admin-only. The check is a middleware that reads the caller's admin flag from
-datastore on every request rather than trusting the session token, so revoking somebody's admin
+the database on every request rather than trusting the session token, so revoking somebody's admin
 takes effect immediately instead of waiting out a 30 day cookie. Hiding the controls from
 non-admins is only cosmetic; the middleware is what enforces it. A non-admin who follows a link to
 `/users` gets a 403 page rather than a json error.
@@ -303,47 +304,58 @@ whoever is last standing cannot be removed by anyone. To step down, have another
 Disabling is the way to revoke access. It blocks sign in **and ends any session the person already
 has** - every authenticated request re-reads the account, so the change takes effect on their next
 click rather than whenever their 30 day cookie expires. Their links and history stay untouched, and
-enabling them again restores everything. Deleting a user outright is still a console job.
+enabling them again restores everything. Deleting a user outright is still done by hand.
 
-The same re-read means an account deleted in the console also loses its live sessions immediately.
-It costs one datastore key lookup per authenticated request; the public redirect path is untouched.
-If datastore is unreachable the request is allowed through on the strength of its signed token -
+The same re-read means an account deleted by hand also loses its live sessions immediately.
+It costs one primary key lookup per authenticated request; the public redirect path is untouched.
+If the database is unreachable the request is allowed through on the strength of its signed token -
 only an explicit "no such user" or "disabled" closes the door.
 
 ### Creating a user by hand
 
 The first admin has to be made this way, since adding users requires already being one.
 
-In the console, under the right namespace, create an entity of kind `user` with the **key name set
-to the lower-cased email address** (`someone@example.com`). Optional properties the service
-understands:
+The database has a page on the host dashboard, under **Databases**, with a data explorer. Insert a
+row into `users` with the address lower-cased:
 
-| Property       | Type    | Meaning                                                  |
-|----------------|---------|----------------------------------------------------------|
-| `Email`        | string  | Informational copy of the address                         |
-| `Created`      | integer | Unix seconds, informational                               |
-| `LastLogin`    | integer | Unix seconds, written on every successful sign in         |
-| `Admin`        | boolean | `true` lets them see and change every link, not just their own |
-| `Disabled`     | boolean | `true` blocks sign in without deleting the entity         |
+```sql
+INSERT INTO users (email, created, last_login, admin, disabled)
+VALUES ('someone@example.com', unixepoch(), 0, 1, 0);
+```
 
-Entities written before the move to `auth.ajn.me` also carry `LastLinkSent` and `RecentLinkSents`,
-which were the per-address send caps. Nothing reads them now. They are left where they are: a
-property nobody indexes costs nothing, and a sweep to remove them would.
+| Column       | Type    | Meaning                                                     |
+|--------------|---------|-------------------------------------------------------------|
+| `email`      | text    | The address, lower-cased. The primary key                    |
+| `created`    | integer | Unix seconds                                                 |
+| `last_login` | integer | Unix seconds, written on every successful sign in            |
+| `admin`      | integer | `1` lets them see and change every link, not just their own  |
+| `disabled`   | integer | `1` blocks sign in without deleting the row                  |
 
-Extra properties are left alone: logins update one property at a time rather than overwriting the
-entity. To revoke access, delete the entity or set `Disabled` to true - existing sessions keep
-working until the cookie expires unless you also rotate `JWT_SIGNING_KEY`.
+To revoke access, delete the row or set `disabled` to 1 - existing sessions keep working until the
+cookie expires unless you also rotate `JWT_SIGNING_KEY`.
 
-### The kind that used to be here
+### What used to be in datastore
 
-`magic_link` held pending login tokens, keyed by the SHA-256 hash of the emailed one. Nothing writes
-or reads it any more - the tokens live at `auth.ajn.me`. Existing entities can be left to the TTL
-policy on `Expires`, if one was ever added, or deleted outright.
+`magic_link` held pending login tokens, keyed by the SHA-256 hash of the emailed one. The tokens
+live at `auth.ajn.me` now, and that kind was already dead before the move, so it got no table. It
+is named in `ignore_kinds`, which is how the import was told to leave its entities where they are
+rather than refusing to run.
+
+The `link`, `user` and `tag` kinds in namespace `links.ajn.me` are what the tables were imported
+from, through the `datastore` mapping in `pillar.json`. They are only ever read, which is what
+makes the import safe to rehearse and the previous build a rollback. After a week or so the
+mapping comes out of `pillar.json`, `DATASTORE_PROJECT_ID` goes with it - nothing reads it now -
+and the namespace's entities can be deleted by hand.
+
+**`DATASTORE_NAMESPACE` is not one of those.** Despite the name it is the session token audience,
+and dropping it stops sign in working. Renaming it means changing the value's registration at
+`auth.ajn.me` in the same breath; see Configuration.
 
 ## Local development
 
 ```bash
-export DATASTORE_PROJECT_ID=... DATASTORE_NAMESPACE=... JWT_SIGNING_KEY=dev-key
+go run ./cmd/localdb link-shortener-backend.sqlite
+export DATABASE_PATH=link-shortener-backend.sqlite DATASTORE_NAMESPACE=links.ajn.me JWT_SIGNING_KEY=dev-key
 export APP_BASE_URL=http://localhost:8080 COOKIE_SECURE=false mode=debug
 go run ./cmd/link-shortener-backend
 ```

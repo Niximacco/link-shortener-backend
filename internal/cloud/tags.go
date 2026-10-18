@@ -1,71 +1,104 @@
 package data
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
-	datastore "cloud.google.com/go/datastore"
 	"github.com/anthonynixon/link-shortener-backend/internal/tags"
 	"github.com/anthonynixon/link-shortener-backend/internal/types"
 )
 
-const tagKind = "tag"
-
 var (
-	TagNotFoundErr = errors.New("tag not found in datastore")
+	TagNotFoundErr = errors.New("tag not found")
 	// TagInUseErr is what a rename hits when the owner already has a tag under
 	// the new name. Merging the two would be a guess at what was meant.
 	TagInUseErr = errors.New("that tag name is already taken")
 )
 
-// TAG_LIST_LIMIT caps the tags page. Same reasoning as LINK_LIST_LIMIT: the
-// query carries no sort order, so no composite index is needed.
+// TAG_LIST_LIMIT caps the tags page.
 const TAG_LIST_LIMIT = 200
 
-// tagKey builds the key a tag is stored under. Putting the owner in the key is
-// what makes a tag owned: two people can each have a "work" tag, and neither can
-// end up with two of them, without a uniqueness query on the way in.
-func tagKey(owner string, name string) *datastore.Key {
-	key := datastore.NameKey(tagKind, NormalizeEmail(owner)+":"+tags.Key(name), nil)
-	key.Namespace = namespace
-	return key
+var tagColumns = []string{"id", "owner", "name", "color", "created"}
+
+var (
+	selectTag = `SELECT ` + strings.Join(tagColumns, ", ") + ` FROM tags`
+	insertTag = insertNew("tags", tagColumns, "id")
+	saveTag   = update("tags", tagColumns, "id")
+)
+
+// tagID is the primary key a tag is stored under, and was its Datastore key.
+// Putting the owner in the key is what makes a tag owned: two people can each
+// have a "work" tag, and neither can end up with two of them, without a
+// uniqueness query on the way in.
+func tagID(owner string, name string) string {
+	return NormalizeEmail(owner) + ":" + tags.Key(name)
+}
+
+// scanTag reads a row. The key is not kept on the struct: it is the owner and
+// the name, which are columns of their own, and deriving it on every write in
+// tagValues is what keeps the three from disagreeing.
+func scanTag(row scanner) (tag types.Tag, err error) {
+	var id string
+	err = row.Scan(&id, &tag.Owner, &tag.Name, &tag.Color, &tag.Created)
+	return tag, err
+}
+
+func tagValues(tag types.Tag) []any {
+	return []any{tagID(tag.Owner, tag.Name), tag.Owner, tag.Name, tag.Color, tag.Created}
 }
 
 // ListTags returns a user's tags, by name. An empty owner returns everybody's,
 // which is what an admin looking at the whole service gets.
 func ListTags(owner string, limit int) (list []types.Tag, err error) {
-	query := datastore.NewQuery(tagKind).Namespace(namespace)
+	query := selectTag
+	args := []any{}
+
 	if owner != "" {
-		query = query.FilterField("Owner", "=", NormalizeEmail(owner))
-	}
-	if limit > 0 {
-		query = query.Limit(limit)
+		query += ` WHERE owner = ?`
+		args = append(args, NormalizeEmail(owner))
 	}
 
-	_, err = datastoreClient.GetAll(ctx, query, &list)
-	if err = tolerateFieldMismatch(err); err != nil {
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	list = []types.Tag{}
+	for rows.Next() {
+		tag, err := scanTag(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, tag)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	if list == nil {
-		list = []types.Tag{}
-	}
-
-	// A tag entity written by hand in the console can arrive without a colour,
-	// or with something that isn't one. Both are settled here rather than at
-	// each place a colour gets used: the colour ends up in a style attribute on
-	// the page and in the json the dashboard script builds its pills from, and
-	// one gate on the way out of datastore is easier to be sure of than a check
-	// at every use.
+	// A tag row imported from Datastore can arrive without a colour, or with
+	// something that isn't one. Both are settled here rather than at each place
+	// a colour gets used: the colour ends up in a style attribute on the page
+	// and in the json the dashboard script builds its pills from, and one gate
+	// on the way out is easier to be sure of than a check at every use.
 	for i := range list {
 		if !tags.ValidColor(list[i].Color) {
 			list[i].Color = tags.DefaultColor
 		}
 	}
 
+	// Ordered here rather than in SQL because the order is by tags.Key, which
+	// is the name folded the way this service folds it, and at this size
+	// sorting the page is free.
 	sort.Slice(list, func(i, j int) bool {
 		if left, right := tags.Key(list[i].Name), tags.Key(list[j].Name); left != right {
 			return left < right
@@ -80,32 +113,19 @@ func ListTags(owner string, limit int) (list []types.Tag, err error) {
 // overwriting, so making a tag that already exists can never quietly change the
 // colour of the one already in use.
 func NewTag(owner string, name string, color string) (tag types.Tag, err error) {
-	owner = NormalizeEmail(owner)
-	name = tags.Normalize(name)
-	key := tagKey(owner, name)
-
 	tag = types.Tag{
-		Name:    name,
+		Name:    tags.Normalize(name),
 		Color:   color,
-		Owner:   owner,
+		Owner:   NormalizeEmail(owner),
 		Created: time.Now().Unix(),
 	}
 
-	_, err = datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
-		var existing types.Tag
-		if err := tx.Get(key, &existing); err != datastore.ErrNoSuchEntity {
-			if err == nil || isFieldMismatch(err) {
-				return AlreadyExistsErr
-			}
-			return err
-		}
-
-		_, err := tx.Put(key, &tag)
-		return err
-	})
-
+	added, err := changed(db.ExecContext(ctx, insertTag, tagValues(tag)...))
 	if err != nil {
 		return types.Tag{}, err
+	}
+	if !added {
+		return types.Tag{}, AlreadyExistsErr
 	}
 
 	return tag, nil
@@ -154,27 +174,25 @@ func EnsureTags(owner string, names []string) error {
 // UpdateTag changes a tag's name, its colour, or both, and returns what the tag
 // looks like afterwards.
 //
-// Renaming means moving the entity, since the name is part of its key, and then
-// rewriting the name on every link of the owner's that carried it. Those link
-// writes are not in the tag's transaction: no datastore transaction can span a
-// tag and an unbounded number of links, and a link pointing at a name that no
-// longer exists is the state worth avoiding, so the tag moves first and the
-// links follow.
+// Renaming moves the row, since the name is part of its key, and then rewrites
+// the name on every link of the owner's that carried it. Those link writes are
+// not in the tag's transaction: holding one across a tag and an unbounded
+// number of links is not something to do to a single writer database, and a
+// link pointing at a name that no longer exists is the state worth avoiding, so
+// the tag moves first and the links follow.
 func UpdateTag(owner string, name string, newName string, newColor string) (tag types.Tag, err error) {
 	owner = NormalizeEmail(owner)
 	newName = tags.Normalize(newName)
-	oldKey := tagKey(owner, name)
+	oldID := tagID(owner, name)
 	renaming := newName != "" && tags.Key(newName) != tags.Key(name)
 
-	_, err = datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
-		var stored types.Tag
-		if err := tx.Get(oldKey, &stored); err != nil {
-			if errors.Is(err, datastore.ErrNoSuchEntity) {
-				return TagNotFoundErr
-			}
-			if !isFieldMismatch(err) {
-				return err
-			}
+	err = inTransaction(func(tx *sql.Tx) error {
+		stored, err := scanTag(tx.QueryRowContext(ctx, selectTag+` WHERE id = ?`, oldID))
+		if errors.Is(err, sql.ErrNoRows) {
+			return TagNotFoundErr
+		}
+		if err != nil {
+			return err
 		}
 
 		if stored.Owner == "" {
@@ -185,16 +203,13 @@ func UpdateTag(owner string, name string, newName string, newColor string) (tag 
 			stored.Color = newColor
 		}
 
-		writeKey := oldKey
 		if renaming {
-			writeKey = tagKey(owner, newName)
-
-			var occupant types.Tag
-			if err := tx.Get(writeKey, &occupant); err != datastore.ErrNoSuchEntity {
-				if err == nil || isFieldMismatch(err) {
-					return TagInUseErr
-				}
+			taken, err := occupied(tx, `SELECT 1 FROM tags WHERE id = ?`, tagID(owner, newName))
+			if err != nil {
 				return err
+			}
+			if taken {
+				return TagInUseErr
 			}
 
 			stored.Name = newName
@@ -204,14 +219,8 @@ func UpdateTag(owner string, name string, newName string, newColor string) (tag 
 			stored.Name = newName
 		}
 
-		if _, err := tx.Put(writeKey, &stored); err != nil {
+		if _, err := tx.ExecContext(ctx, saveTag, append(tagValues(stored), oldID)...); err != nil {
 			return err
-		}
-
-		if renaming {
-			if err := tx.Delete(oldKey); err != nil {
-				return err
-			}
 		}
 
 		tag = stored
@@ -234,20 +243,18 @@ func UpdateTag(owner string, name string, newName string, newColor string) (tag 
 // DeleteTag removes a tag and takes it off the owner's links.
 func DeleteTag(owner string, name string) error {
 	owner = NormalizeEmail(owner)
-	key := tagKey(owner, name)
+	id := tagID(owner, name)
 
-	_, err := datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
-		var stored types.Tag
-		if err := tx.Get(key, &stored); err != nil {
-			if errors.Is(err, datastore.ErrNoSuchEntity) {
+	err := inTransaction(func(tx *sql.Tx) error {
+		if _, err := scanTag(tx.QueryRowContext(ctx, selectTag+` WHERE id = ?`, id)); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
 				return TagNotFoundErr
 			}
-			if !isFieldMismatch(err) {
-				return err
-			}
+			return err
 		}
 
-		return tx.Delete(key)
+		_, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE id = ?`, id)
+		return err
 	})
 
 	if err != nil {
@@ -265,9 +272,9 @@ func DeleteTag(owner string, name string) error {
 // removes the tag instead, which is what deleting one does.
 //
 // Only the links actually carrying the tag are written, and each is written in
-// its own transaction that re-reads the entity, so a link edited at the same
-// time keeps whichever change landed last rather than being reverted wholesale
-// to what the list read a moment earlier.
+// its own transaction that re-reads the row, so a link edited at the same time
+// keeps whichever change landed last rather than being reverted wholesale to
+// what the list read a moment earlier.
 func retagLinks(owner string, name string, newName string) error {
 	if owner == "" {
 		return nil
@@ -291,39 +298,34 @@ func retagLinks(owner string, name string, newName string) error {
 	return nil
 }
 
-// relabelLink applies one tag rename to one link, inside a transaction.
+// relabelLink applies one tag rename to one link, inside a transaction. Only
+// the tags column is written, so a destination or a click counted in between is
+// not rolled back by this.
 func relabelLink(short string, name string, newName string) error {
-	key := linkKey(short)
-
-	_, err := datastoreClient.RunInTransaction(ctx, func(tx *datastore.Transaction) error {
-		var stored types.Link
-		if err := tx.Get(key, &stored); err != nil {
-			if errors.Is(err, datastore.ErrNoSuchEntity) {
-				// The link went away between the list and here. Nothing to do.
-				return nil
-			}
-			if !isFieldMismatch(err) {
-				return err
-			}
+	return inTransaction(func(tx *sql.Tx) error {
+		var stored string
+		err := tx.QueryRowContext(ctx, `SELECT tags FROM links WHERE short = ?`, strings.ToUpper(short)).Scan(&stored)
+		if errors.Is(err, sql.ErrNoRows) {
+			// The link went away between the list and here. Nothing to do.
+			return nil
+		}
+		if err != nil {
+			return err
 		}
 
-		relabelled, changed := tags.Rename(stored.Tags, name, newName)
-		if !changed {
+		relabelled, altered := tags.Rename(stored, name, newName)
+		if !altered {
 			return nil
 		}
 
-		stored.Tags = relabelled
-		_, err := tx.Put(key, &stored)
+		_, err = tx.ExecContext(ctx, `UPDATE links SET tags = ? WHERE short = ?`, relabelled, strings.ToUpper(short))
 		return err
 	})
-
-	return err
 }
 
 // FilterByTag keeps only the links carrying a tag. Filtering happens here
-// rather than in the query for the same reason the list is sorted here: a
-// datastore filter on tags alongside the CreatedBy filter would need a
-// composite index, and the page is already bounded by LINK_LIST_LIMIT.
+// rather than in the query because a link's tags are one comma separated
+// column, and the page is already bounded by LINK_LIST_LIMIT.
 func FilterByTag(links []types.Link, tag string) []types.Link {
 	if strings.TrimSpace(tag) == "" {
 		return links
