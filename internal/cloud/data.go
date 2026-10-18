@@ -89,6 +89,31 @@ func Open(path string) error {
 	return nil
 }
 
+// Healthy reports whether the database is still there and readable. It is what
+// /healthz answers on, beyond the process being up.
+//
+// Open makes the same check once, at startup, and the container does not come up
+// if it fails - so this is not about a deploy that never had a database. It is
+// about one that stops having a working one while it runs: the file removed
+// under it, the mount gone read-only, the disk full. Without it the container
+// would keep reporting healthy and every page would fail.
+//
+// One table is enough. They are in one file, made by the same deploy, so a
+// failure that leaves one of them readable and not the others is not a thing
+// that happens, and this is on the path of every health check.
+func Healthy() error {
+	if db == nil {
+		return errors.New("the database is not open")
+	}
+
+	if err := db.PingContext(ctx); err != nil {
+		return err
+	}
+
+	_, err := db.ExecContext(ctx, `SELECT 1 FROM links LIMIT 1`)
+	return err
+}
+
 // scanner is whatever a row can be read out of, so one scan function serves
 // both a single row and a row of a list.
 type scanner interface{ Scan(...any) error }

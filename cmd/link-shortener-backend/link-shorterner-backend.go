@@ -34,7 +34,18 @@ func main() {
 	// The host checks this to tell whether the service is up, and a deploy
 	// waits for it before it takes the previous build away. It takes no
 	// session: the dashboard probing it is not signed in to anything.
+	//
+	// It reads the database rather than only answering. A container whose
+	// database has gone away still serves this route, and saying "ok" to that
+	// would keep a broken build up and let a deploy that cannot read anything
+	// pass as healthy.
 	router.GET("/healthz", func(c *gin.Context) {
+		if err := data.Healthy(); err != nil {
+			log.Printf("healthz: the database is not readable: %s", err.Error())
+			c.String(http.StatusServiceUnavailable, "unavailable")
+			return
+		}
+
 		c.String(http.StatusOK, "ok")
 	})
 
