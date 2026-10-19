@@ -17,12 +17,15 @@ import (
 
 var (
 	JWT_SIGNING_KEY []byte
-	// AUDIENCE is what this site's session tokens are issued for, and the name
-	// it is registered at auth.ajn.me under. DATASTORE_NAMESPACE is a misnomer
-	// now that there is no datastore, but the value - "links.ajn.me" - is
-	// registered with that service, so renaming the variable means changing it
-	// in two places at once. Left alone here on purpose; see the README.
-	AUDIENCE = os.Getenv("DATASTORE_NAMESPACE")
+	// AUDIENCE is what this site's session tokens are issued for, and what
+	// every one of them is checked against.
+	//
+	// It was read from DATASTORE_NAMESPACE, which held "links.ajn.me" because
+	// that is what the namespace was called. It is that same value as a
+	// constant now that there is no datastore, so the sessions already out
+	// there stay good and dropping the variable signs nobody out. Nothing
+	// sends it to auth.ajn.me; this site's key there is AJN_AUTH_API_KEY.
+	AUDIENCE = "links.ajn.me"
 
 	COOKIE_NAME   = "ls_session"
 	COOKIE_DOMAIN = ""
@@ -59,15 +62,6 @@ func init() {
 	}
 
 	JWT_SIGNING_KEY = []byte(signingKey)
-
-	// Until this service moved to SQLite, the datastore client refused to start
-	// without DATASTORE_NAMESPACE, and that is what made a missing audience
-	// loud. Nothing reads the variable for a database any more, so the check
-	// belongs here instead: an empty audience would otherwise be issued
-	// quietly, on tokens this service then refuses on the way back in.
-	if AUDIENCE == "" {
-		log.Fatal(`You need to set the environment variable "DATASTORE_NAMESPACE"`)
-	}
 
 	if name := os.Getenv("SESSION_COOKIE_NAME"); name != "" {
 		COOKIE_NAME = name

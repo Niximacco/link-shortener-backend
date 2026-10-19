@@ -194,7 +194,6 @@ front of the site instead of on a JSON body. Lookups that fail for a reason othe
 | Variable                | Required | Default             | Notes                                                    |
 |-------------------------|----------|---------------------|----------------------------------------------------------|
 | `DATABASE_PATH`         | yes      | -                   | The SQLite file. Set by the deploy, which makes the file and its tables before the container starts. Fatal if unset |
-| `DATASTORE_NAMESPACE`   | yes      | -                   | **The session token audience, and nothing else** - there is no datastore any more. Fatal if unset. Still called this because the value, `links.ajn.me`, is what this site is registered under at auth.ajn.me |
 | `JWT_SIGNING_KEY`       | yes      | -                   | Fatal if unset. Rotating it signs everybody out           |
 | `AJN_AUTH_URL`          | for login | -                  | The magic link service, `https://auth.ajn.me`             |
 | `AJN_AUTH_API_KEY`      | for login | -                  | This site's key, from the service's admin pages. Without it login is disabled and returns 503 |
@@ -342,20 +341,18 @@ is named in `ignore_kinds`, which is how the import was told to leave its entiti
 rather than refusing to run.
 
 The `link`, `user` and `tag` kinds in namespace `links.ajn.me` are what the tables were imported
-from, through the `datastore` mapping in `pillar.json`. They are only ever read, which is what
-makes the import safe to rehearse and the previous build a rollback. After a week or so the
-mapping comes out of `pillar.json`, `DATASTORE_PROJECT_ID` goes with it - nothing reads it now -
-and the namespace's entities can be deleted by hand.
+from, through a `datastore` mapping in `pillar.json`. Once the move had settled the mapping came
+out, with `DATASTORE_PROJECT_ID` and `DATASTORE_NAMESPACE`, and the namespace's entities go with
+pillar-of-autumn's `clear-datastore`.
 
-**`DATASTORE_NAMESPACE` is not one of those.** Despite the name it is the session token audience,
-and dropping it stops sign in working. Renaming it means changing the value's registration at
-`auth.ajn.me` in the same breath; see Configuration.
+`DATASTORE_NAMESPACE` was also the session token audience. That is the constant `links.ajn.me` in
+`internal/auth` now - the value the variable held - so the sessions issued before are still good.
 
 ## Local development
 
 ```bash
 go run ./cmd/localdb link-shortener-backend.sqlite
-export DATABASE_PATH=link-shortener-backend.sqlite DATASTORE_NAMESPACE=links.ajn.me JWT_SIGNING_KEY=dev-key
+export DATABASE_PATH=link-shortener-backend.sqlite JWT_SIGNING_KEY=dev-key
 export APP_BASE_URL=http://localhost:8080 COOKIE_SECURE=false mode=debug
 go run ./cmd/link-shortener-backend
 ```
